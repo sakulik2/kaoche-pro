@@ -1,6 +1,6 @@
 <div align="center">
   <img src="ui/assets/icon.png" width="128" height="128" alt="Kaoche Pro Icon">
-  <h1>Kaoche Pro</h1>
+  <h1>kaoche-pro</h1>
   <p><strong>专业的视频字幕质量评估与对齐工具</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.8%2B-blue.svg" alt="Python Version">
@@ -9,7 +9,7 @@
   </p>
 </div>
 
-**Kaoche Pro** 是一款专为字幕组和本地化人员打造的桌面增强工具。它整合了先进的 AI 模型（如 OpenAI, Gemini, Claude）进行 LQA（语言质量评估）分析，并提供强大的时间轴自动对齐、项目管理及沉浸式视频预览功能，极大提升字幕校对效率。
+**kaoche-pro** 是一款专为字幕组和本地化人员打造的桌面增强工具。它整合了先进的 AI 模型（如 OpenAI, Gemini, Claude）进行 LQA（语言质量评估）分析，并提供强大的时间轴自动对齐、项目管理及沉浸式视频预览功能，极大提升字幕校对效率。
 
 ## ✨ 核心功能
 
