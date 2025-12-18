@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+
+# Distribution / Packaging
+build/
+dist/
+# *.spec
+*.exe
+
+#i18n
+i18n/
+
+# IDE
+.vscode/
+.idea/
+
+# Application Data
+*.log
+*.kcp
+# Config files
+*.json
+!config/settings.example.json
+!config/prompts/*.txt
+
+# Local Config (if any)
+local_settings.py
+
+# Resources
+resources/
+sample/

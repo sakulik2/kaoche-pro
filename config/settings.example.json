@@ -1,0 +1,50 @@
+{
+  "api": {
+    "current_provider": "openai",
+    "current_model": "gpt-4o",
+    "api_keys": {
+      "openai": "",
+      "claude": "",
+      "deepseek": "",
+      "gemini": "",
+      "custom": ""
+    },
+    "batch_size": 10,
+    "timeout": 60,
+    "provider": "openai",
+    "model": "gpt-4o",
+    "api_key": "",
+    "batch_size_alignment": 50,
+    "batch_size_lqa": 20
+  },
+  "prompts": {
+    "lqa_preset": "lqa_strict",
+    "alignment_preset": "alignment"
+  },
+  "ui": {
+    "language": "zh_CN",
+    "target_language": "zh_CN",
+    "theme": "light",
+    "font_size": 13,
+    "show_video_player": true
+  },
+  "recent_files": {
+    "source": [],
+    "target": [],
+    "video": []
+  },
+  "advanced": {
+    "batch_size": 10,
+    "timeout": 30,
+    "cache_ttl": 3600,
+    "log_level": "INFO",
+    "vlc_path": ""
+  },
+  "providers": {
+    "example_provider": {
+        "api_key": "",
+        "base_url": "https://api.example.com/v1",
+        "model": "example-model"
+    }
+  }
+}
