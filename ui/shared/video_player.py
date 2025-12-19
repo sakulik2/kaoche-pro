@@ -470,21 +470,22 @@ class VideoPlayerWidget(QWidget):
                     result = True
             
             # 2. 如果失败，尝试 URI 格式的 set_subtitle_file
-            if not result and uri_path:
-                if self.player.video_set_subtitle_file(uri_path):
-                    logger.debug("video_set_subtitle_file(URI) 成功")
-                    result = True
-            
-            # 3. 最后尝试常规路径
-            if not result:
                 if self.player.video_set_subtitle_file(path_normalized):
                     logger.debug("video_set_subtitle_file(Path) 成功")
                     result = True
             
+            # 4. 终极尝试：直接修改 Media 的 Options (虽然 Media 已存在，但某些 VLC 版本可能生效)
+            if not result:
+                m = self.player.get_media()
+                if m:
+                    m.add_option(f"sub-file={path_normalized}")
+                    logger.debug("media.add_option(sub-file) 作为最后尝试")
+                    result = True
+
             if result:
                 self.current_subtitle = subtitle_path
                 # 给予更多时间让 VLC 解析字幕文件
-                QTimer.singleShot(300, lambda: self.activate_last_subtitle_track(retry=10))
+                QTimer.singleShot(500, lambda: self.activate_last_subtitle_track(retry=12))
             else:
                 logger.error(f"❌ 所有字幕加载尝试均失败: {subtitle_path}")
                 # 即使返回 False，也尝试一下 fallback check

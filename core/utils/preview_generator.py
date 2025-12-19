@@ -34,14 +34,20 @@ class PreviewGenerator:
             # 设置基本样式
             subs.info['PlayResX'] = '1280'
             subs.info['PlayResY'] = '720'
+            subs.info['ScaledBorderAndShadow'] = 'yes'
             
             style = pysubs2.SSAStyle(
-                fontname="Arial", 
-                fontsize=40, 
-                primarycolor=pysubs2.Color(255, 255, 0), # 黄色
-                backcolor=pysubs2.Color(0, 0, 0, 128),   # 半透明黑色背景
-                outline=2,
-                shadow=1
+                fontname="Microsoft YaHei", 
+                fontsize=36, 
+                primarycolor=pysubs2.Color(255, 255, 255), # 白色
+                secondarycolor=pysubs2.Color(0, 0, 0, 0),
+                outlinecolor=pysubs2.Color(0, 0, 0, 180),   # 描边阴影
+                backcolor=pysubs2.Color(0, 0, 0, 100),    # 背景
+                bold=True,
+                outline=3,
+                shadow=1,
+                alignment=pysubs2.Alignment.BOTTOM_CENTER,
+                marginl=20, marginr=20, marginv=40
             )
             subs.styles["Default"] = style
             

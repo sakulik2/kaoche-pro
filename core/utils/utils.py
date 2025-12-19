@@ -77,3 +77,40 @@ def get_project_root() -> str:
     parent_dir = os.path.dirname(current_dir)
     return os.path.dirname(parent_dir)
 
+def detect_encoding(file_path: str) -> str:
+    """自动检测字幕文件编码"""
+    # 优先尝试 UTF-8
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            f.read()
+        return 'utf-8'
+    except UnicodeDecodeError:
+        pass
+        
+    # 尝试 GB18030 (兼容 GBK)
+    try:
+        with open(file_path, 'r', encoding='gb18030') as f:
+            f.read()
+        return 'gb18030'
+    except UnicodeDecodeError:
+        pass
+
+    # 如果安装了 charset-normalizer 或 chardet 则尝试
+    try:
+        import charset_normalizer
+        with open(file_path, 'rb') as f:
+            result = charset_normalizer.detect(f.read())
+            if result and result.get('encoding'):
+                return result['encoding']
+    except ImportError:
+        try:
+            import chardet
+            with open(file_path, 'rb') as f:
+                result = chardet.detect(f.read())
+                if result and result.get('encoding'):
+                    return result['encoding']
+        except ImportError:
+            pass
+
+    return 'utf-8' # 最终保底
+

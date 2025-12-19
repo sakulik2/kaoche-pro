@@ -8,3 +8,5 @@ requests>=2.31.0
 anyio>=3.7.1,<4.0.0
 cryptography>=41.0.0
 openpyxl>=3.1.0
+charset-normalizer>=3.3.0
+langdetect>=1.0.9

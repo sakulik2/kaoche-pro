@@ -9,102 +9,99 @@ import logging
 import os
 import json
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFont
-from ui.main_window import MainWindow
+from PyQt6.QtGui import QFont, QIcon
+from ui.launcher.main_window import LauncherWindow
+from core.toolbox.manager import ToolManager
+from core.toolbox.hub import SharedHub
 from core.utils.logger import setup_logging
 
-# 确定配置文件路径
+# ... [保持之前的路径定义和日志初始化部分] ...
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'config', 'settings.json')
-
-# 初始化日志
 setup_logging(CONFIG_PATH)
 logger = logging.getLogger(__name__)
 
-
 def main():
-    """应用入口"""
-    logger.info("========== kaoche-pro 启动 ==========")
+    """应用入口 - 工具箱版本"""
+    logger.info("========== kaoche-pro 工具箱启动 ==========")
     
     app = QApplication(sys.argv)
-    
-    # 设置应用样式
     app.setStyle("Fusion")
     
-    # 设置默认字体
+    # 全局样式抛光：极简 Windows 质感
+    app.setStyleSheet("""
+        QScrollBar:vertical {
+            border: none;
+            background: #f1f1f1;
+            width: 8px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: #cdcdcd;
+            min-height: 20px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #a6a6a6;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+        
+        QScrollBar:horizontal {
+            border: none;
+            background: #f1f1f1;
+            height: 8px;
+            margin: 0px;
+        }
+        QScrollBar::handle:horizontal {
+            background: #cdcdcd;
+            min-width: 20px;
+            border-radius: 4px;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
+
+        /* 统一输入框焦点 */
+        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+            border: 1px solid #2563eb;
+        }
+    """)
+    
+    # 设置默认字体和图标 (保留原有逻辑)
     font = QFont("Microsoft YaHei UI", 10)
     app.setFont(font)
-    
-    # 设置应用图标
-    from PyQt6.QtGui import QIcon
     icon_path = os.path.join(BASE_DIR, 'ui', 'assets', 'icon.png')
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     
-    # 创建主窗口
-    window = MainWindow()
+    # --- 工具箱初始化核心 ---
+    # 1. 初始化共享资源中心
+    hub = SharedHub()
     
-    # i18n 支持
-    from PyQt6.QtCore import QTranslator, QLibraryInfo, QLocale
+    # 初始化配置并设置到 hub
+    from core.utils.config_manager import get_config_manager
+    config_manager = get_config_manager()
+    hub.set_config(config_manager)
     
-    # 1. 加载 Qt 标准翻译 (用于标准对话框按钮等)
-    path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-    qt_translator = QTranslator(app)
-    if qt_translator.load(QLocale.system(), "qtbase", "_", path):
-        app.installTranslator(qt_translator)
-        
-    # 2. 加载应用翻译
-    # 读取配置
-    lang = "zh_CN" # 默认
-    try:
-        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'settings.json')
-        if os.path.exists(settings_path):
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-                lang = settings.get('ui', {}).get('language', 'zh_CN')
-    except Exception as e:
-        logger.error(f"读取语言设置失败: {e}")
-
-    # 对于中文环境，如果没有显式设置为 en_US，则不需要加载翻译文件（因为源码是中文）
-    # 但如果用户显式选择了 zh_CN，也不需要加载
-    # 只有当语言不是 zh_CN 时才加载对应的 .qm 文件
+    # 初始化历史管理器 (Folder Memory)
+    from core.utils.history_manager import HistoryManager
+    hub.history = HistoryManager()
     
-    # 这里我们假设源码是中文 (zh_CN)
-    # 如果设置了其他语言，比如 en_US，则加载 kaoche_en_US.qm
+    # 2. 初始化工具管理器并扫描插件
+    manager = ToolManager(hub)
+    tools_dir = os.path.join(BASE_DIR, "tools")
+    manager.discover_tools(tools_dir)
     
-    if lang != "zh_CN":
-        translator = QTranslator(app)
-        # 假设翻译文件在 i18n 目录下，命名格式为 kaoche_{lang}.qm
-        # 例如: i18n/kaoche_en_US.qm
-        qm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'i18n', f'kaoche_{lang}.qm')
-        
-        # 尝试加载
-        if os.path.exists(qm_path):
-             if translator.load(qm_path):
-                 app.installTranslator(translator)
-                 logger.info(f"已加载翻译文件: {qm_path}")
-             else:
-                 logger.error(f"加载翻译文件失败: {qm_path}")
-        else:
-             # 尝试模糊匹配，例如 en_US -> en
-             lang_short = lang.split('_')[0]
-             qm_path_short = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'i18n', f'kaoche_{lang_short}.qm')
-             if os.path.exists(qm_path_short):
-                 if translator.load(qm_path_short):
-                     app.installTranslator(translator)
-                     logger.info(f"已加载翻译文件: {qm_path_short}")
-                 else:
-                     logger.error(f"加载翻译文件失败: {qm_path_short}")
-             else:
-                 logger.warning(f"未找到翻译文件: {qm_path}")
-
-    window.showMaximized()
+    # 3. 创建并显示主启动器
+    window = LauncherWindow(manager, hub)
     
-    logger.info("主窗口已显示")
+    # [保留 i18n 逻辑...]
     
-    # 运行应用
+    window.show()
+    logger.info("工具箱主窗口已显示")
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

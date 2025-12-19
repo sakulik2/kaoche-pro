@@ -23,9 +23,11 @@ i18n/
 # Application Data
 *.log
 *.kcp
+
 # Config files
 *.json
 !config/settings.example.json
+!config/providers.json
 !config/prompts/*.txt
 
 # Local Config (if any)
@@ -34,3 +36,4 @@ local_settings.py
 # Resources
 resources/
 sample/
+temp/
