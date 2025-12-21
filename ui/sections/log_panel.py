@@ -24,9 +24,8 @@ class LogPanel(QGroupBox):
         
     @pyqtSlot(str)
     def append_log(self, message: str):
-        """记录日志"""
+        """记录日志到 UI 界面"""
         self.log_output.append(message)
-        logger.info(message)
         
     def clear(self):
         """清空日志"""

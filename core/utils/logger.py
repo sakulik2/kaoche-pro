@@ -3,16 +3,27 @@ import logging.handlers
 import os
 import sys
 import json
+from datetime import datetime
 
 def setup_logging(config_path=None):
     """
-    配置全局日志
+    配置全局日志 - 智能会话策略
     """
+    # 1. 确保日志目录存在
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    # 2. 生成基于启动时刻的文件名 (log(YYYY-MM-DD).txt)
+    # 由于 Handler 在此处初始化后会一直持有句柄，因此即便运行跨过零点，
+    # 该会话的所有日志仍会保留在启动当天的文件中，满足“不割裂”需求。
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_file = os.path.join(log_dir, f"log({date_str}).txt")
+    
     # 默认配置
     log_level_str = "INFO"
-    log_file = "kaoche.log"
     
-    # 尝试读取配置文件
+    # 尝试从配置文件读取偏好级别
     if config_path and os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -24,9 +35,9 @@ def setup_logging(config_path=None):
     # 转换日志级别
     level = getattr(logging, log_level_str.upper(), logging.INFO)
     
-    # 创建Formatter
+    # 3. 创建专业格式化器 (包含模块名以便区分工具)
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
@@ -38,23 +49,25 @@ def setup_logging(config_path=None):
     if root_logger.handlers:
         root_logger.handlers.clear()
         
-    # 1. Console Handler
+    # 4. Console Handler (终端调试)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.setLevel(level)
     root_logger.addHandler(console_handler)
     
-    # 2. File Handler (Rotating)
-    # 10MB per file, max 5 backups
+    # 5. File Handler (持久化记录 - 跨午夜不割裂)
+    # 使用 RotatingFileHandler 仅为了防止单个文件极端过大 (10MB)
     try:
         file_handler = logging.handlers.RotatingFileHandler(
             log_file, 
             maxBytes=10*1024*1024, 
-            backupCount=5, 
+            backupCount=10, 
             encoding='utf-8'
         )
         file_handler.setFormatter(formatter)
+        file_handler.setLevel(level)
         root_logger.addHandler(file_handler)
     except Exception as e:
-        print(f"Failed to setup file logging: {e}")
+        print(f"Failed to setup file logging at {log_file}: {e}")
         
-    logging.info(f"Log initialized. Level: {log_level_str}")
+    logging.info(f"Log initialized. Session File: {log_file}")

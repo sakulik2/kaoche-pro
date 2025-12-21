@@ -37,3 +37,7 @@ local_settings.py
 resources/
 sample/
 temp/
+logs/
+test/
+plan/
+models/

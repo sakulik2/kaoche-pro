@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QFormLayout, QGroupBox,
-                             QMessageBox, QScrollArea, QWidget, QStackedWidget,
-                             QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
+                             QMessageBox, QScrollArea, QWidget, QTabWidget,
+                             QTableWidget, QTableWidgetItem,
                              QComboBox, QSpinBox, QCheckBox, QFrame, QHeaderView)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QPixmap
@@ -19,7 +19,7 @@ class ProviderManagerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("管理 AI 提供商")
         self.resize(600, 450)
-        from core.shared.api_client import load_providers_config, save_providers_config
+        from core.api.api_client import load_providers_config, save_providers_config
         self.providers = load_providers_config()
         self.save_func = save_providers_config
         self.setup_ui()
@@ -76,12 +76,11 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.hub = hub
         self.setWindowTitle("kaoche-pro 全局设置")
-        # ... [保持其余初始化代码] ...
-        self.resize(750, 650)
+        self.resize(750, 600)
         self.initial_tab = initial_tab
         self.cm = self.hub.config if self.hub else None
         self.settings = self.cm.load() if self.cm else {}
-        from core.shared.api_client import load_providers_config
+        from core.api.api_client import load_providers_config
         self.providers_config = load_providers_config()
         
         # 设置窗口图标
@@ -95,28 +94,28 @@ class SettingsDialog(QDialog):
     def setup_ui(self):
         self.setStyleSheet("""
             QDialog { background-color: #ffffff; }
-            #SideNav {
-                background-color: #f9fafb;
-                border: none;
-                border-right: 1px solid #e5e7eb;
-                outline: none;
+            QTabWidget::pane {
+                border: 1px solid #e5e7eb;
+                border-top: none;
+                background-color: #ffffff;
             }
-            #SideNav::item {
-                padding: 15px 20px;
+            QTabBar::tab {
+                padding: 12px 25px;
                 color: #4b5563;
-                border-left: 4px solid transparent;
+                background-color: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-bottom: none;
                 font-size: 13px;
                 font-weight: 500;
-                min-height: 20px;
-                margin-bottom: 2px;
             }
-            #SideNav::item:selected {
-                background-color: #eff6ff;
+            QTabBar::tab:selected {
+                background-color: #ffffff;
                 color: #2563eb;
-                border-left: 4px solid #2563eb;
+                border-bottom: 2px solid #2563eb;
                 font-weight: 600;
             }
-            #SideNav::item:hover:!selected { background-color: #f3f4f6; }
+            QTabBar::tab:hover:!selected { background-color: #f3f4f6; }
+            
             QGroupBox {
                 font-weight: 700;
                 border: 1px solid #e5e7eb;
@@ -137,40 +136,32 @@ class SettingsDialog(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(15, 15, 15, 0)
+        layout.setSpacing(10)
         
-        main_content = QHBoxLayout()
-        main_content.setSpacing(0)
+        self.tabs = QTabWidget()
         
-        self.side_nav = QListWidget()
-        self.side_nav.setObjectName("SideNav")
-        self.side_nav.setFixedWidth(200) # 稍微加宽防止重叠
-        self.side_nav.setSpacing(5)      # 增加项间距，彻底解决垂直重叠
-        self.side_nav.currentRowChanged.connect(self.on_nav_changed)
-        
-        self.content_stack = QStackedWidget()
-        
-        # 移除 Emoji，使用纯文字
-        self.add_nav_item("AI 接口服务", self.create_api_tab())
-        self.add_nav_item("界面与偏好", self.create_ui_tab())
+        # 添加标签页
+        self.tabs.addTab(self.create_api_tab(), "AI 接口服务")
+        self.tabs.addTab(self.create_ui_tab(), "界面与偏好")
         
         tool_settings = self.get_active_tool_settings()
         if tool_settings:
-            self.add_nav_item("当前工具设置", tool_settings)
+            # 确保工具设置页有足够的内边距
+            container = QWidget()
+            cont_layout = QVBoxLayout(container)
+            cont_layout.setContentsMargins(20, 10, 20, 10)
+            cont_layout.addWidget(tool_settings)
+            self.tabs.addTab(container, "当前工具设置")
             
-        self.add_nav_item("关于 kaoche-pro", self.create_about_tab())
+        self.tabs.addTab(self.create_about_tab(), "关于 kaoche-pro")
             
-        main_content.addWidget(self.side_nav)
-        main_content.addWidget(self.content_stack, 1)
-        layout.addLayout(main_content)
+        layout.addWidget(self.tabs)
 
         # 底部按钮区
         footer = QFrame()
-        footer.setObjectName("Footer")
-        footer.setStyleSheet("#Footer { border-top: 1px solid #e5e7eb; background: #f9fafb; }")
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(20, 12, 20, 12)
+        footer_layout.setContentsMargins(0, 10, 0, 15)
         footer_layout.addStretch()
         cancel_btn = QPushButton("取消")
         cancel_btn.setFixedSize(80, 32)
@@ -183,15 +174,18 @@ class SettingsDialog(QDialog):
         footer_layout.addWidget(save_btn)
         layout.addWidget(footer)
 
-        self.side_nav.setCurrentRow(0)
+        if self.initial_tab == "tool" and self.tabs.count() >= 3:
+            self.tabs.setCurrentIndex(2)
+        else:
+            self.tabs.setCurrentIndex(0)
 
     def on_nav_changed(self, index):
-        self.content_stack.setCurrentIndex(index)
+        # 保持兼容性，虽然 QTabWidget 不需要这个信号
+        pass
 
     def add_nav_item(self, text, widget):
-        item = QListWidgetItem(text)
-        self.side_nav.addItem(item)
-        self.content_stack.addWidget(widget)
+        # 保持兼容性
+        self.tabs.addTab(widget, text)
 
     def on_provider_manage(self):
         dialog = ProviderManagerDialog(self)
@@ -322,7 +316,7 @@ class SettingsDialog(QDialog):
             return
         
         try:
-            from core.shared.api_client import get_models_with_cache
+            from core.api.api_client import get_models_with_cache
             config = self.providers_config.get(provider_id)
             models = get_models_with_cache(provider_id, config, api_key)
             self.model_combo.clear()
@@ -337,10 +331,12 @@ class SettingsDialog(QDialog):
         self.model_combo.clear()
         self.model_combo.addItems(cfg.get('models', []))
         
-        # 加载已保存的 Key
+        # 切换服务商时自动加载对应的 API Key
+        # 这样做是为了支持多提供商配置。当用户在下拉列表中选择不同的 AI 服务商时，
+        # 界面应自动填充该服务商对应的密钥，从而实现多厂商配置的无缝切换和独立管理。
         if self.cm:
-            # 简化版逻辑：这里应从 providers 字典读取
-            pass
+            saved_key = self.cm.get_api_key(self.cm.password, provider_id=pid)
+            self.key_input.setText(saved_key or "")
 
     def load_values(self):
         if not self.settings: return
@@ -363,8 +359,15 @@ class SettingsDialog(QDialog):
 
     def save_all(self):
         # 1. 触发工具特定设置的保存
-        for i in range(self.content_stack.count()):
-            w = self.content_stack.widget(i)
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            # 处理嵌套的 container
+            if isinstance(w, QWidget) and w.layout():
+                if w.layout().count() > 0:
+                    real_w = w.layout().itemAt(0).widget()
+                    if hasattr(real_w, 'save_settings'):
+                        real_w.save_settings()
+            
             if hasattr(w, 'save_settings'):
                 try:
                     w.save_settings()

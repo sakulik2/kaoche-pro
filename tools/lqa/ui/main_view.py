@@ -12,10 +12,10 @@ from PyQt6.QtGui import QIcon
 import shutil
 
 # ============ 共享核心模块 ============
-from core.shared.project_model import ProjectModel
-from core.shared.api_client import APIClient, load_providers_config
-from core.shared.input_handler import InputOrchestrator, SuggestedAction
-from ui.shared.video_player import VideoPlayerWidget
+from core.models.project_model import ProjectModel
+from core.api.api_client import APIClient, load_providers_config
+from core.services.input_handler import InputOrchestrator, SuggestedAction
+from ui.components.video_player import VideoPlayerWidget
 
 # ============ LQA 专用 UI ============
 from .subtitle_table import SubtitleTable
@@ -182,6 +182,8 @@ class LqaMainView(QWidget):
         self.video_player.time_changed.connect(self.on_video_time_changed)
 
     def log(self, message):
+        """记录状态日志"""
+        logger.info(message)
         self.log_panel.append_log(message)
 
     # --- 拖放与加载逻辑 (从 MainWindow 复制并适配) ---

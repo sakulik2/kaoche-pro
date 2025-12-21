@@ -136,15 +136,21 @@ def process_lqa_batch(
         return []
 
 
-def validate_lqa_result(result: Dict[str, Any]) -> bool:
+def validate_lqa_result(result: Any) -> bool:
     """
     验证 LQA 结果的完整性
+    支持字典或 SubtitlePair 实例
     
     Returns:
         True if valid
     """
     required_fields = ['id', 'score', 'issues', 'comment', 'suggestion']
-    return all(field in result for field in required_fields)
+    
+    if isinstance(result, dict):
+        return all(field in result for field in required_fields)
+    
+    # 假设 lqa_result 存在于某种模型中
+    return hasattr(result, 'lqa_result') and result.lqa_result is not None
 
 
 def merge_lqa_results(results_list: List[List[Dict]]) -> Dict[int, Dict]:

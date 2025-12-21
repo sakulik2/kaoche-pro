@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
     def video_file(self, value):
         self.project_model.video_file = value
 
-    # ... (Keep setup_ui, create_log_panel, etc. unchanged)
+
     
     # 拖放事件支持
     def dragEnterEvent(self, event):
@@ -567,17 +567,17 @@ class MainWindow(QMainWindow):
             if self.project_model.load_project(file_path):
                 self.log(self.tr("✅ 项目已加载: {}").format(os.path.basename(file_path)))
                 
-                # Restore Subtitles
+                # 恢复项目数据
                 self.populate_table()
                 
-                # Restore Video
+                # 恢复视频
                 if self.video_file and os.path.exists(self.video_file):
                     self.show_video_panel()
                     self.video_player.load_video(self.video_file)
                 else:
                     self.video_group.setVisible(False)
                 
-                # Log restored files
+                # 记录恢复的文件
                 if self.source_file:
                      self.log(f"  - 原文: {os.path.basename(self.source_file)}")
                 if self.target_file:
@@ -1434,7 +1434,8 @@ class MainWindow(QMainWindow):
             return "请分析以下字幕的翻译质量并评分。"
     
     def log(self, message: str):
-        """记录日志"""
+        """记录状态日志"""
+        logger.info(message)
         self.log_panel.append_log(message)
     
     # ========== 视频播放器相关方法 ==========

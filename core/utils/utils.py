@@ -12,7 +12,7 @@ def detect_source_language(texts: List[str]) -> str:
         texts: 原文文本列表
         
     Returns:
-        检测到的语言代码 (e.g. 'en', 'zh-cn', 'unknown')
+        检测到的语言代码 (例如: 'en', 'zh-cn', 'unknown')
     """
     if not texts:
         return "unknown"

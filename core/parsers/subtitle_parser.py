@@ -10,7 +10,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def parse_subtitle_file(file_path: str) -> List[Dict[str, any]]:
+from core.models.subtitle import SubtitleItem
+
+def parse_subtitle_file(file_path: str) -> List[SubtitleItem]:
     """
     通用字幕文件解析函数，支持 SRT, ASS, VTT
     
@@ -18,27 +20,25 @@ def parse_subtitle_file(file_path: str) -> List[Dict[str, any]]:
         file_path: 字幕文件路径
         
     Returns:
-        字幕数据列表，每个元素包含:
-        - start: 开始时间 (秒)
-        - end: 结束时间 (秒)
-        - text: 文本内容
+        字幕数据列表 (SubtitleItem)
     """
     try:
         subs = pysubs2.load(file_path)
         parsed = []
         
-        for line in subs:
+        for i, line in enumerate(subs):
             # 基础清理
             text = line.plaintext.strip()
             
             # ASS 特殊处理：将 ASS 的硬换行 \N 替换为换行符
             text = text.replace(r"\N", "\n").replace(r"\n", "\n")
             
-            parsed.append({
-                'start': line.start / 1000.0,  # 转换为秒
-                'end': line.end / 1000.0,      # 转换为秒
-                'text': text
-            })
+            parsed.append(SubtitleItem(
+                text=text,
+                start=line.start / 1000.0,  # 转换为秒
+                end=line.end / 1000.0,      # 转换为秒
+                index=i
+            ))
             
         logger.info(f"成功解析字幕文件: {file_path}, 共 {len(parsed)} 行")
         return parsed

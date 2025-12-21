@@ -83,15 +83,6 @@ class APIClient:
     ) -> Dict[str, Any]:
         """
         调用 OpenAI API（或兼容接口）
-        
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户输入
-            json_mode: 是否使用 JSON 模式
-            temperature: 温度参数
-            
-        Returns:
-            Dict: 包含响应文本、模型名称和使用情况
         """
         try:
             from openai import OpenAI
@@ -145,15 +136,6 @@ class APIClient:
     ) -> Dict[str, Any]:
         """
         调用 Anthropic Claude API
-        
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户输入
-            json_mode: 是否使用 JSON 模式
-            temperature: 温度参数
-            
-        Returns:
-            Dict: 包含响应文本、模型名称和使用情况
         """
         try:
             from anthropic import Anthropic
@@ -202,15 +184,6 @@ class APIClient:
     ) -> Dict[str, Any]:
         """
         调用 Google Gemini API - 自动检测模式
-        
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户输入
-            json_mode: 是否使用 JSON 模式
-            temperature: 温度参数
-            
-        Returns:
-            Dict: 包含响应文本、模型名称和使用情况
         """
         if self._gemini_mode == 'native':
             return self._call_gemini_native(system_prompt, user_prompt, json_mode, temperature)
@@ -242,15 +215,6 @@ class APIClient:
     ) -> Dict[str, Any]:
         """
         调用 Gemini 原生 API
-        
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户输入
-            json_mode: 是否使用 JSON 模式
-            temperature: 温度参数
-            
-        Returns:
-            Dict: 包含响应文本、模型名称和使用情况
         """
         try:
             from google import genai
@@ -303,15 +267,6 @@ class APIClient:
     ) -> Dict[str, Any]:
         """
         调用 Gemini OpenAI 兼容 API
-        
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户输入
-            json_mode: 是否使用 JSON 模式
-            temperature: 温度参数
-            
-        Returns:
-            Dict: 包含响应文本、模型名称和使用情况
         """
         try:
             from openai import OpenAI
@@ -361,12 +316,6 @@ class APIClient:
 def load_providers_config(config_path: str = "config/providers.json") -> Dict[str, Dict]:
     """
     加载提供商配置文件
-    
-    Args:
-        config_path: 配置文件的路径
-        
-    Returns:
-        Dict: {provider_id: provider_config} 字典
     """
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -396,6 +345,5 @@ def get_models_with_cache(
 ) -> List[str]:
     """
     获取模型列表（带缓存）
-    简化版本：直接返回配置文件中的模型列表
     """
     return provider_config.get('models', [])

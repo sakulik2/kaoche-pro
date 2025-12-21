@@ -15,7 +15,7 @@ from core.toolbox.manager import ToolManager
 from core.toolbox.hub import SharedHub
 from core.utils.logger import setup_logging
 
-# ... [保持之前的路径定义和日志初始化部分] ...
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'config', 'settings.json')
 setup_logging(CONFIG_PATH)
