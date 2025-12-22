@@ -39,5 +39,6 @@ sample/
 temp/
 logs/
 test/
-plan/
 models/
+plan/
+cache/

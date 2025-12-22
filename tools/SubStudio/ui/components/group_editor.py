@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, 
     QListWidgetItem, QLabel, QComboBox, QColorDialog, QInputDialog,
-    QMessageBox, QGroupBox, QFormLayout
+    QMessageBox, QGroupBox, QFormLayout, QCheckBox
 )
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QIcon
 from PyQt6.QtCore import Qt
@@ -80,6 +80,11 @@ class GroupEditorWidget(QWidget):
         color_row.addWidget(self.color_prev); color_row.addWidget(btn_pick); color_row.addStretch()
         self.prop_layout.addRow("轨道颜色:", color_row)
         
+        self.chk_visible = QCheckBox("显示于视频区域")
+        self.chk_visible.setChecked(True)
+        self.chk_visible.toggled.connect(self.on_visibility_toggled)
+        self.prop_layout.addRow("可见性:", self.chk_visible)
+        
         # 4. 嵌入式样式编辑器 (核心重构)
         self.prop_layout.addRow(QLabel("<b>样式微调:</b>"))
         self.embedded_style_editor = StyleEditorWidget(self.store)
@@ -130,8 +135,18 @@ class GroupEditorWidget(QWidget):
             self.combo_style.blockSignals(True); self.combo_style.setCurrentIndex(idx); self.combo_style.blockSignals(False)
         self.current_color = g_data.get("color", "#3498db"); self._update_color_preview(self.current_color)
         
+        # 显隐状态回显
+        self.chk_visible.blockSignals(True)
+        self.chk_visible.setChecked(self.store.is_group_visible(current.text()))
+        self.chk_visible.blockSignals(False)
+
         # 联动嵌入式编辑器
         self.embedded_style_editor.set_target_style(style_name)
+
+    def on_visibility_toggled(self, checked):
+        cur = self.list_groups.currentItem()
+        if cur:
+            self.store.set_group_visibility(cur.text(), checked)
 
     def _update_color_preview(self, hex):
         self.color_prev.setStyleSheet(f"background-color: {hex}; border: 1px solid #555; border-radius: 2px;")

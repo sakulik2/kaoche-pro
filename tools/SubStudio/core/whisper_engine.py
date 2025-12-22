@@ -11,7 +11,7 @@ class TranscriptionWorker(QThread):
     progress_percent = pyqtSignal(int) # 0-100
     finished = pyqtSignal(bool, object) # success, result (list of dict or error str)
 
-    def __init__(self, model_path, audio_path, device="cuda", compute_type="float16", align=True, language=None, initial_prompt=None):
+    def __init__(self, model_path, audio_path, device="cuda", compute_type="float16", align=True, language=None, initial_prompt=None, vad_filter=True):
         super().__init__()
         self.model_path = model_path
         self.audio_path = audio_path
@@ -20,6 +20,7 @@ class TranscriptionWorker(QThread):
         self.align = align
         self.language = language
         self.initial_prompt = initial_prompt
+        self.vad_filter = vad_filter
         self._is_cancelled = False
 
     def cancel(self):
@@ -115,8 +116,13 @@ class TranscriptionWorker(QThread):
                 self.audio_path, 
                 beam_size=5, 
                 language=self.language,
-                initial_prompt=prompt
+                initial_prompt=prompt,
+                vad_filter=self.vad_filter
             ) 
+            
+            # [NEW] 立即回显检测到的语言
+            self.progress.emit(f"DETECTION: {info.language} ({info.language_probability:.2f})")
+            logger.info(f"Detected language: {info.language} with probability {info.language_probability:.4f}")
             
             segments = []
             total_duration = info.duration
@@ -241,7 +247,7 @@ class WhisperEngine(QObject):
     def is_running(self):
         return self.worker is not None and self.worker.isRunning()
         
-    def start_transcription(self, audio_path, device="cuda", align=True, language=None, initial_prompt=None):
+    def start_transcription(self, audio_path, device="cuda", align=True, language=None, initial_prompt=None, vad_filter=True):
         if self.is_running():
             return False, "Task already running"
             
@@ -256,7 +262,8 @@ class WhisperEngine(QObject):
             device, 
             align=align, 
             language=language,
-            initial_prompt=initial_prompt
+            initial_prompt=initial_prompt,
+            vad_filter=vad_filter
         )
         self.worker.progress.connect(lambda msg: self.task_progress.emit(msg, -1)) # -1 ignore
         self.worker.progress_percent.connect(lambda p: self.task_progress.emit("", p)) # "" ignore

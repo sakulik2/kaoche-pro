@@ -83,8 +83,19 @@ class SubtitleListWidget(QWidget):
         if not selected_rows:
             return
         
-        menu = QMenu(self)
-        
+        # 对齐位置子菜单
+        align_label_map = {
+            1: "左下 (an1)", 2: "中下 (an2)", 3: "右下 (an3)",
+            4: "左中 (an4)", 5: "正中 (an5)", 6: "右中 (an6)",
+            7: "左上 (an7)", 8: "中上 (an8)", 9: "右上 (an9)"
+        }
+        align_menu = menu.addMenu("快速对齐 (Alignment)")
+        for val, label in align_label_map.items():
+            act = align_menu.addAction(label)
+            act.triggered.connect(lambda checked, v=val, rows=selected_rows: self.apply_alignment(rows, v))
+
+        menu.addSeparator()
+
         # 分组菜单
         group_menu = menu.addMenu("分配到分组")
         
@@ -100,6 +111,26 @@ class SubtitleListWidget(QWidget):
         
         # 在鼠标位置显示菜单
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def apply_alignment(self, rows, align_val):
+        """批量应用对齐标签"""
+        import re
+        for row in rows:
+            ev = self.store.get_event(row)
+            if not ev: continue
+            
+            # 使用正则表达式替换现有的 \an 标签，或者在开头插入
+            tag = f"\\an{align_val}"
+            if "{" in ev.text:
+                # 寻找第一个大括号内的内容
+                if re.search(r"\{\\an\d", ev.text):
+                     new_text = re.sub(r"(\\an\d)", tag, ev.text)
+                else:
+                     new_text = ev.text.replace("{", f"{{{tag}", 1)
+            else:
+                new_text = f"{{{tag}}}{ev.text}"
+            
+            self.store.update_event(row, text=new_text)
     
     def assign_to_group(self, rows, group_name):
         """将选中行分配到分组"""
@@ -133,32 +164,58 @@ class SubtitleListWidget(QWidget):
             events = self.store.subs.events
             self.table.setRowCount(len(events))
         
-            self.table.blockSignals(True)
             for row, ev in enumerate(events):
                 # Start
                 t_start = self.format_time(ev.start)
                 item_start = QTableWidgetItem(t_start)
+                item_start.setFlags(item_start.flags() & ~Qt.ItemFlag.ItemIsEditable) # 禁止编辑时间
                 item_start.setData(Qt.ItemDataRole.UserRole, ev.start) # 存储实际 ms
                 self.table.setItem(row, 0, item_start)
                 
                 # End
                 t_end = self.format_time(ev.end)
-                self.table.setItem(row, 1, QTableWidgetItem(t_end))
+                item_end = QTableWidgetItem(t_end)
+                item_end.setFlags(item_end.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, 1, item_end)
                 
                 # Text
-                # 简单处理：移除换行符并清洗 ASS标签用于显示
-                # 使用简单的 regex 去除 {} 包裹的内容
+                # 简单处理：显示纯文本，但在编辑时显示带标签的原文
                 import re
                 raw_text = ev.text.replace(r"\N", " ").replace("\n", " ")
                 clean_text = re.sub(r"\{.*?\}", "", raw_text)
                 
                 item_text = QTableWidgetItem(clean_text)
-                item_text.setToolTip(raw_text) # 鼠标悬停显示原始带标签文本
+                item_text.setData(Qt.ItemDataRole.UserRole, ev.text) # 存原文
+                item_text.setToolTip(ev.text)
                 self.table.setItem(row, 2, item_text)
             
+            # 监听改动
+            self.table.itemChanged.connect(self.on_item_changed)
         finally:
             self.table.blockSignals(False)
             self._is_refreshing = False
+
+    def on_item_changed(self, item):
+        """捕捉手动编辑"""
+        if getattr(self, "_is_refreshing", False) or item.column() != 2:
+            return
+        
+        row = item.row()
+        new_text = item.text()
+        
+        # 如果用户修改的是纯文本，尝试保留原有标签 (简单策略)
+        # 这里为了防止误伤，如果原文本包含复杂标签，我们可能更倾向于让用户直接修改原文
+        # 但既然是“便捷编辑”，我们直接更新 Store 即可。
+        old_raw = item.data(Qt.ItemDataRole.UserRole)
+        import re
+        if "{" in old_raw:
+            # 提取所有标签
+            tags = "".join(re.findall(r"\{.*?\}", old_raw))
+            final_text = tags + new_text
+        else:
+            final_text = new_text
+            
+        self.store.update_event(row, text=final_text)
 
     def on_item_clicked(self, item):
         row = item.row()

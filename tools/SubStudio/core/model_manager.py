@@ -120,25 +120,49 @@ class ModelManager(QObject):
 
     def get_model_path(self, model_id=None):
         """
-        获取模型的本地绝对路径
-        优先级: 自定义路径 > 指定ID的下载路径 > 默认ID下载路径
+        获取模型的本地绝对路径 (带自动寻优逻辑)
+        优先级: 自定义路径 > 指定ID路径 > 默认ID路径 > 本地已存在的最高质量模型
         """
         # 1. 优先检查自定义路径
         if self._custom_model_path and os.path.exists(self._custom_model_path):
              return self._custom_model_path
              
+        # 2. 检查指定 ID 或默认 ID
         if not model_id:
             model_id = self.DEFAULT_MODEL_ID
             
         sanitized_name = model_id.replace("/", "_")
         target_dir = os.path.join(self.models_root, sanitized_name)
         
-        # 简单验证：检查是否存在 config.json 和 model.bin
-        if os.path.exists(os.path.join(target_dir, "config.json")) and \
-           os.path.exists(os.path.join(target_dir, "model.bin")):
+        if os.path.exists(os.path.join(target_dir, "model.bin")):
             return target_dir
             
-        return None
+        # 3. [智能寻优] 如果指定模型不在，尝试在本地 models 目录下找一个最好的“替补”
+        logger.info(f"Model {model_id} not found locally, scanning for best alternative...")
+        locals = self.scan_local_models() # list of (rel_path, full_path)
+        if not locals:
+            return None
+            
+        # 优先级权重 (分值越高越好)
+        rank = {"large-v3": 100, "large": 90, "medium": 70, "small": 50, "base": 30, "tiny": 10}
+        best_path = None
+        max_score = -1
+        
+        for name, path in locals:
+            score = 5 # 基础分
+            lower_name = name.lower()
+            for key, val in rank.items():
+                if key in lower_name:
+                    score = max(score, val); break
+            
+            if score > max_score:
+                max_score = score
+                best_path = path
+        
+        if best_path:
+            logger.info(f"Auto-selected best alternative model: {best_path} (Score: {max_score})")
+            
+        return best_path
 
     def is_model_ready(self, model_id=None):
         return self.get_model_path(model_id) is not None

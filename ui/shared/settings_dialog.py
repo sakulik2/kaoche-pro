@@ -62,14 +62,24 @@ class ProviderManagerDialog(QDialog):
         pid = self.table.item(row, 0).text()
         cfg = self.providers.get(pid)
         
-        # 弹出一个简单的文本编辑框来编辑 models (JSON 格式)
+        from PyQt6.QtWidgets import QInputDialog
         models_str = ",".join(cfg.get('models', []))
-        new_models, ok = QMessageBox.question(self, "编辑模型", 
-                                            f"编辑 {pid} 的模型列表 (逗号分隔):", 
-                                            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        # 这里为了简化，我们只在这里做演示。实际中应该提供更复杂的 UI。
-        # 由于时间关系，我们先解决提示语问题，让它看起来是“已集成”。
-        QMessageBox.information(self, "集成提示", f"已进入 {pid} 的高级编辑模式。该功能已完整映射至核心引擎。")
+        new_models_str, ok = QInputDialog.getText(self, "编辑模型列表", 
+                                               f"编辑 {pid} 的模型 (逗号分隔):", 
+                                               QLineEdit.EchoMode.Normal, models_str)
+        
+        if ok and new_models_str:
+            # 更新内存
+            models = [m.strip() for m in new_models_str.split(',') if m.strip()]
+            cfg['models'] = models
+            
+            # 持续化
+            try:
+                self.save_func(self.providers)
+                self.refresh_table()
+                QMessageBox.information(self, "成功", f"提供商 {pid} 的模型列表已更新。")
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"保存失败: {e}")
 
 class SettingsDialog(QDialog):
     def __init__(self, hub, parent=None, initial_tab=None):
@@ -316,12 +326,19 @@ class SettingsDialog(QDialog):
             return
         
         try:
-            from core.api.api_client import get_models_with_cache
+            from core.api.api_client import get_models_with_cache, save_providers_config
             config = self.providers_config.get(provider_id)
             models = get_models_with_cache(provider_id, config, api_key)
-            self.model_combo.clear()
-            self.model_combo.addItems(models)
-            QMessageBox.information(self, f"完成", f"已获取 {len(models)} 个模型")
+            
+            if models:
+                self.model_combo.clear()
+                self.model_combo.addItems(models)
+                
+                # 持久化抓取到的模型列表
+                config['models'] = models
+                save_providers_config(self.providers_config)
+                
+                QMessageBox.information(self, f"完成", f"已成功抓取并同步 {len(models)} 个模型")
         except Exception as e:
             QMessageBox.critical(self, "刷新失败", str(e))
 

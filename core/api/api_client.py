@@ -6,6 +6,7 @@
 import json
 import logging
 import time
+import os
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class APIClient:
         # 提取配置
         self.provider_id = provider_config['id']
         self.api_type = provider_config.get('api_type', 'openai')
-        self.api_base = provider_config.get('api_base')
+        self.api_base = provider_config.get('api_base') or provider_config.get('base_url')
         self.api_key = api_key
         self.model = model
         
@@ -313,11 +314,18 @@ class APIClient:
 
 # ========== 辅助函数 ==========
 
-def load_providers_config(config_path: str = "config/providers.json") -> Dict[str, Dict]:
+def load_providers_config() -> Dict[str, Dict]:
     """
     加载提供商配置文件
     """
     try:
+        from core.utils.utils import get_project_root
+        config_path = os.path.join(get_project_root(), 'config', 'providers.json')
+        
+        if not os.path.exists(config_path):
+            logger.warning(f"提供商配置文件不存在: {config_path}")
+            return {}
+
         with open(config_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
@@ -328,6 +336,23 @@ def load_providers_config(config_path: str = "config/providers.json") -> Dict[st
     except Exception as e:
         logger.error(f"加载提供商配置失败: {e}")
         return {}
+
+
+def save_providers_config(providers: Dict[str, Dict]):
+    """
+    保存提供商配置到文件
+    """
+    try:
+        from core.utils.utils import get_project_root
+        config_path = os.path.join(get_project_root(), 'config', 'providers.json')
+        
+        data = {"providers": list(providers.values())}
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        logger.info(f"成功保存提供商配置到 {config_path}")
+    except Exception as e:
+        logger.error(f"保存提供商配置失败: {e}")
+        raise
 
 
 def get_provider_models(provider_id: str, providers_config: Dict) -> List[str]:
@@ -344,6 +369,33 @@ def get_models_with_cache(
     use_cache: bool = True
 ) -> List[str]:
     """
-    获取模型列表（带缓存）
+    获取模型列表。如果是 OpenAI 兼容服务（OpenRouter, DeepSeek 等），
+    则尝试通过联机 API 动态抓取实时列表。
     """
+    if not api_key:
+        return provider_config.get('models', [])
+
+    api_type = provider_config.get('api_type', 'openai')
+    api_base = provider_config.get('base_url') or provider_config.get('api_base')
+
+    # 只有 API 类型为 openai 且有地址的服务才尝试联机抓取
+    if api_type == 'openai' and api_base:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=api_base)
+            # 抓取模型列表，设置 10 秒超时
+            models_data = client.models.list(timeout=10.0)
+            
+            # 提取 ID 并排序（过滤掉一些明显的非对话模型）
+            fetched_models = sorted([m.id for m in models_data if m.id])
+            
+            if fetched_models:
+                logger.info(f"成功为 {provider_id} 抓取到 {len(fetched_models)} 个模型")
+                return fetched_models
+                
+        except Exception as e:
+            logger.warning(f"联机抓取模型列表失败 ({provider_id}): {e}")
+            # 联机失败则回退到配置文件中的预设列表
+            return provider_config.get('models', [])
+
     return provider_config.get('models', [])

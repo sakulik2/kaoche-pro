@@ -6,6 +6,8 @@
 from typing import List, Dict, Tuple
 import logging
 
+from .lqa_processor import load_prompt_template
+
 logger = logging.getLogger(__name__)
 
 
@@ -319,10 +321,8 @@ def align_subtitles_with_llm(source_data: List[Dict], target_data: List[Dict],
     logger.info(f"开始 LLM 对齐: {len(source_texts)} 原文, {len(target_texts)} 译文")
     
     # 读取prompt模板
-    try:
-        with open('config/prompts/alignment.txt', 'r', encoding='utf-8') as f:
-            system_prompt = f.read()
-    except FileNotFoundError:
+    system_prompt = load_prompt_template(".alignment.txt")
+    if not system_prompt:
         # 使用默认prompt
         system_prompt = """你是一个专业的字幕对齐助手。根据语义匹配原文和译文。
 输出JSON数组格式：[{"source": "...", "target": "..."}]"""
@@ -539,10 +539,8 @@ def _align_with_context(unmatched_sources: List[str],
     import json
     
     # 读取prompt模板
-    try:
-        with open('config/prompts/alignment.txt', 'r', encoding='utf-8') as f:
-            system_prompt = f.read()
-    except FileNotFoundError:
+    system_prompt = load_prompt_template(".alignment.txt")
+    if not system_prompt:
         system_prompt = """你是专业的字幕对齐助手。根据语义匹配原文和译文。
 输出JSON数组格式：[{"source": "...", "target": "..."}]"""
     

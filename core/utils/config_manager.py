@@ -134,22 +134,32 @@ class ConfigManager:
             logger.error(f"禁用加密失败（密码可能错误）: {e}")
             return False
     
-    def get_api_key(self, password: Optional[str] = None) -> Optional[str]:
+    def get_api_key(self, password: Optional[str] = None, provider_id: Optional[str] = None) -> Optional[str]:
         """
         获取API密钥（自动解密）
         
         Args:
             password: 如果启用加密，需要提供密码
+            provider_id: 可选的服务商ID
             
         Returns:
             API密钥明文
         """
-        api_key = self.config.get('api', {}).get('api_key', '')
+        api_cfg = self.config.get('api', {})
         
+        # 1. 优先从 providers 字典找
+        api_key = ""
+        if provider_id:
+            api_key = api_cfg.get('keys', {}).get(provider_id, "")
+        
+        # 2. 兜底全局 key (如果特定 key 未找到)
+        if not api_key:
+            api_key = api_cfg.get('api_key', '')
+            
         if not api_key:
             return None
         
-        # 检查是否加密
+        # 3. 检查是否加密
         if api_key.startswith('enc:'):
             if not password:
                 logger.error("需要密码来解密API密钥")
@@ -166,13 +176,14 @@ class ConfigManager:
             # 未加密
             return api_key
     
-    def set_api_key(self, api_key: str, password: Optional[str] = None) -> bool:
+    def set_api_key(self, api_key: str, password: Optional[str] = None, provider_id: Optional[str] = None) -> bool:
         """
         设置API密钥（自动加密）
         
         Args:
             api_key: API密钥明文
             password: 如果启用加密，需要提供密码
+            provider_id: 可选的服务商ID (LQA 规范)
             
         Returns:
             是否成功
@@ -181,6 +192,7 @@ class ConfigManager:
             if 'api' not in self.config:
                 self.config['api'] = {}
             
+            final_key = api_key
             # 如果启用加密
             if self.encryption_enabled:
                 if not password:
@@ -190,11 +202,15 @@ class ConfigManager:
                 if not self._fernet:
                     self._fernet = self._create_fernet(password)
                 
-                encrypted_key = self._encrypt(api_key)
-                self.config['api']['api_key'] = encrypted_key
+                final_key = self._encrypt(api_key)
+            
+            # 存储位置分发
+            if provider_id:
+                if 'keys' not in self.config['api']:
+                    self.config['api']['keys'] = {}
+                self.config['api']['keys'][provider_id] = final_key
             else:
-                # 不加密
-                self.config['api']['api_key'] = api_key
+                self.config['api']['api_key'] = final_key
             
             return True
             

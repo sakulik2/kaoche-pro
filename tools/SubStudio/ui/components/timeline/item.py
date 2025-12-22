@@ -185,6 +185,21 @@ class SubtitleItem(QGraphicsRectItem):
             
         super().mouseMoveEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        """双击编辑文字"""
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(None, "修改字幕文本", "文本内容:", text=self.text)
+        if ok:
+            # 修改时保留现有所有标签，仅替换文本部分
+            # 这是一次简单的追加/替换
+            event_obj = self.store.get_event(self.event_idx)
+            import re
+            tags = "".join(re.findall(r"\{.*?\}", event_obj.text))
+            new_raw = tags + text
+            self.store.update_event(self.event_idx, text=new_raw)
+            self.update_from_store()
+            self.update()
+
     def mouseReleaseEvent(self, event):
         self.is_moving = False
         self.is_resizing_left = False
@@ -208,6 +223,20 @@ class SubtitleItem(QGraphicsRectItem):
 
     def contextMenuEvent(self, event):
         menu = QMenu()
+        
+        # 快速对齐子菜单 (Sync with List)
+        align_label_map = {
+            1: "左下 (an1)", 2: "中下 (an2)", 3: "右下 (an3)",
+            4: "左中 (an4)", 5: "正中 (an5)", 6: "右中 (an6)",
+            7: "左上 (an7)", 8: "中上 (an8)", 9: "右上 (an9)"
+        }
+        align_menu = menu.addMenu("快速对齐 (Alignment)")
+        for val, label in align_label_map.items():
+            act = align_menu.addAction(label)
+            act.triggered.connect(lambda checked, v=val: self.apply_alignment(v))
+        
+        menu.addSeparator()
+
         groups_menu = menu.addMenu("设定分组")
         groups = self.store.get_all_groups()
         for g_name in sorted(groups.keys()):
@@ -224,6 +253,23 @@ class SubtitleItem(QGraphicsRectItem):
         action_del = menu.addAction("删除")
         action_del.triggered.connect(lambda: self.store.delete_events([self.event_idx]))
         menu.exec(event.screenPos())
+
+    def apply_alignment(self, align_val):
+        """批量应用对齐标签"""
+        import re
+        ev = self.store.get_event(self.event_idx)
+        if not ev: return
+        
+        tag = f"\\an{align_val}"
+        if "{" in ev.text:
+            if re.search(r"\{\\an\d", ev.text):
+                    new_text = re.sub(r"(\\an\d)", tag, ev.text)
+            else:
+                    new_text = ev.text.replace("{", f"{{{tag}", 1)
+        else:
+            new_text = f"{{{tag}}}{ev.text}"
+        
+        self.store.update_event(self.event_idx, text=new_text)
 
     def paint(self, painter, option, widget):
         rect = self.rect()

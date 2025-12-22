@@ -2,10 +2,14 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, 
     QGroupBox, QRadioButton, QLabel, QLineEdit, QPushButton, 
     QComboBox, QFileDialog, QMessageBox, QTableWidget, 
-    QHeaderView, QTableWidgetItem, QCheckBox
+    QHeaderView, QTableWidgetItem, QCheckBox, QFormLayout, QSpinBox,
+    QListWidget, QTextEdit
 )
 from PyQt6.QtCore import Qt
+import os
+import logging
 from ...core.model_manager import ModelManager 
+from core.utils.config_manager import get_config_manager
 
 class SubStudioSettingsDialog(QDialog):
     """
@@ -15,7 +19,7 @@ class SubStudioSettingsDialog(QDialog):
     def __init__(self, model_manager: ModelManager, parent=None):
         super().__init__(parent)
         self.manager = model_manager
-        self.setWindowTitle("设置 (Settings) - SubStudio")
+        self.setWindowTitle("设置 - SubStudio")
         self.resize(800, 500)
         
         self.init_ui()
@@ -31,25 +35,373 @@ class SubStudioSettingsDialog(QDialog):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
         
-        # 1. 常规设置 (General)
-        self.tab_general = QWidget()
-        self._init_general_tab()
-        self.tabs.addTab(self.tab_general, "常规 (General)")
-        
-        # 2. AI 配置 (AI Strategy)
+        # 1. 语音生成
         self.tab_ai = QWidget()
         self._init_ai_tab()
-        self.tabs.addTab(self.tab_ai, "AI 引擎 (AI Strategy)")
+        self.tabs.addTab(self.tab_ai, "语音生成")
+        
+        # 2. 文本翻译
+        self.tab_translate = self._init_translate_tab()
+        self.tabs.addTab(self.tab_translate, "文本翻译")
+        
+        # 3. 提示词管理 (LQA 同款)
+        self.tab_prompt = self._init_prompt_tab()
+        self.tabs.addTab(self.tab_prompt, "提示词管理")
+        
+        # 4. 常规设置
         
         # 底部按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        self.btn_close = QPushButton("关闭 (Close)")
+        self.btn_close = QPushButton("关闭")
         self.btn_close.clicked.connect(self.close)
         btn_layout.addWidget(self.btn_close)
         
         main_layout.addLayout(btn_layout)
+
+    def _init_translate_tab(self):
+        """文本翻译设置页"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 15, 20, 15)
+        
+        group = QGroupBox("AI 翻译引擎配置")
+        form = QFormLayout(group)
+        
+        # API 服务商
+        prov_layout = QHBoxLayout()
+        self.combo_trans_provider = QComboBox()
+        self.trans_providers = {}
+        try:
+            from core.api.api_client import load_providers_config
+            self.trans_providers = load_providers_config()
+            for pid, cfg in self.trans_providers.items():
+                self.combo_trans_provider.addItem(cfg.get('display_name', pid), pid)
+        except:
+            pass
+            
+        prov_layout.addWidget(self.combo_trans_provider, 1)
+        self.btn_manage_prov = QPushButton("管理...")
+        self.btn_manage_prov.clicked.connect(self.on_provider_manage)
+        prov_layout.addWidget(self.btn_manage_prov)
+        form.addRow("API 服务商", prov_layout)
+        
+        # API 密钥
+        self.edit_trans_key = QLineEdit()
+        self.edit_trans_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit_trans_key.setPlaceholderText("输入 API Key")
+        self.edit_trans_key.editingFinished.connect(self.on_trans_key_edited)
+        form.addRow("API 密钥", self.edit_trans_key)
+        
+        # 模型选择
+        model_layout = QHBoxLayout()
+        self.combo_trans_model = QComboBox()
+        self.combo_trans_model.setEditable(True)
+        self.combo_trans_model.currentTextChanged.connect(self.on_trans_model_changed)
+        model_layout.addWidget(self.combo_trans_model, 1)
+        
+        self.btn_refresh_models = QPushButton("🔄 刷新")
+        self.btn_refresh_models.clicked.connect(self.refresh_trans_models)
+        model_layout.addWidget(self.btn_refresh_models)
+        form.addRow("模型名称", model_layout)
+        
+        # 接口地址
+        self.edit_trans_base = QLineEdit()
+        self.edit_trans_base.setPlaceholderText("默认地址")
+        self.edit_trans_base.editingFinished.connect(self.on_trans_base_edited)
+        form.addRow("接口地址", self.edit_trans_base)
+        
+        # 目标语言
+        self.combo_trans_target = QComboBox()
+        lang_opts = [("简体中文", "zh"), ("英语", "en"), ("日语", "ja"), ("德语", "de"), ("法语", "fr")]
+        for text, val in lang_opts:
+            self.combo_trans_target.addItem(text, val)
+        self.combo_trans_target.currentIndexChanged.connect(self.on_trans_target_changed)
+        form.addRow("目标语言", self.combo_trans_target)
+        
+        # 批处理数量
+        self.spin_trans_batch = QSpinBox()
+        self.spin_trans_batch.setRange(1, 100)
+        self.spin_trans_batch.setValue(12)
+        self.spin_trans_batch.valueChanged.connect(self.on_trans_batch_changed)
+        form.addRow("每批翻译条数", self.spin_trans_batch)
+
+        layout.addWidget(group)
+        
+        # 测试按钮
+        test_btn_layout = QHBoxLayout()
+        test_btn_layout.addStretch()
+        
+        self.btn_test_trans = QPushButton("测试 API 连接")
+        self.btn_test_trans.setObjectName("primaryButton")
+        self.btn_test_trans.clicked.connect(self.on_test_translation)
+        test_btn_layout.addWidget(self.btn_test_trans)
+        
+        layout.addLayout(test_btn_layout)
+        layout.addStretch()
+        
+        # 初始化监听
+        self.combo_trans_provider.currentIndexChanged.connect(self.on_trans_provider_changed)
+        
+        # 初始化值
+        self._load_trans_settings()
+        
+        return page
+
+    def _load_trans_settings(self):
+        cm = get_config_manager()
+        config = cm.load()
+        
+        # 1. 优先设置 Provider
+        api_cfg = config.get('api', {})
+        provider = api_cfg.get("provider", "openai")
+        idx = self.combo_trans_provider.findData(provider)
+        if idx >= 0:
+            self.combo_trans_provider.blockSignals(True)
+            self.combo_trans_provider.setCurrentIndex(idx)
+            self.on_trans_provider_changed(idx, is_loading=True) # 传入 loading 标记
+            self.combo_trans_provider.blockSignals(False)
+        
+        # 2. 回填持久化数据 (如有)
+        # API Key (针对当前 Provider 进行加载，符合 LQA 逻辑)
+        self.edit_trans_key.setText(cm.get_api_key(cm.password, provider_id=provider) or "")
+        
+        # Base URL
+        self.edit_trans_base.setText(api_cfg.get("base_url", ""))
+        
+        # Model
+        saved_model = api_cfg.get("model", "")
+        if saved_model: self.combo_trans_model.setCurrentText(saved_model)
+        
+        # Target Lang
+        ui_cfg = config.get('ui', {})
+        target = ui_cfg.get("target_language", "zh")
+        for i in range(self.combo_trans_target.count()):
+            if self.combo_trans_target.itemData(i) == target:
+                self.combo_trans_target.setCurrentIndex(i)
+                break
+                
+        # Batch Size
+        trans_cfg = config.get('translation', {})
+        self.spin_trans_batch.setValue(int(trans_cfg.get("batch_size", 12)))
+
+    def on_trans_provider_changed(self, index, is_loading=False):
+        pid = self.combo_trans_provider.itemData(index)
+        cfg = self.trans_providers.get(pid, {})
+        
+        # A. 联动更新模型列表
+        self.combo_trans_model.blockSignals(True)
+        self.combo_trans_model.clear()
+        self.combo_trans_model.addItems(cfg.get('models', []))
+        self.combo_trans_model.blockSignals(False)
+        
+        # B. 联动更新地址与密钥 (LQA 逻辑)
+        cm = get_config_manager()
+        if not is_loading:
+            # 自动切换为官方推荐地址
+            self.edit_trans_base.setText(cfg.get('base_url', ""))
+            # 自动加载该服务商对应的 API Key
+            self.edit_trans_key.setText(cm.get_api_key(cm.password, provider_id=pid) or "")
+            
+            # 保存服务商选择
+            config = cm.load()
+            if 'api' not in config: config['api'] = {}
+            config['api']['provider'] = pid
+            config['api']['base_url'] = cfg.get('base_url', "")
+            cm.save(config)
+        else:
+            # 即使是加载，也要确保 Key 是针对该 Provider 的
+            self.edit_trans_key.setText(cm.get_api_key(cm.password, provider_id=pid) or "")
+
+    # --- 翻译页具体保存槽函数 (参考 LQA) ---
+    def on_trans_key_edited(self):
+        cm = get_config_manager()
+        pid = self.combo_trans_provider.itemData(self.combo_trans_provider.currentIndex())
+        cm.set_api_key(self.edit_trans_key.text(), cm.password, provider_id=pid)
+        cm.save(cm.config)
+
+    def on_provider_manage(self):
+        try:
+            from ui.shared.settings_dialog import ProviderManagerDialog
+            dialog = ProviderManagerDialog(self)
+            dialog.exec()
+            # 管理完可能影响了模型列表，刷新一下配置
+            from core.api.api_client import load_providers_config
+            self.trans_providers = load_providers_config()
+            # 触发一次刷新
+            self.on_trans_provider_changed(self.combo_trans_provider.currentIndex())
+        except Exception as e:
+            QMessageBox.warning(self, "出错", f"无法打开管理对话框: {e}")
+
+    def refresh_trans_models(self):
+        provider_id = self.combo_trans_provider.itemData(self.combo_trans_provider.currentIndex())
+        api_key = self.edit_trans_key.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "错误", "请先输入 API Key。")
+            return
+            
+        self.btn_refresh_models.setEnabled(False)
+        self.btn_refresh_models.setText("刷新中...")
+        
+        def do_refresh():
+            try:
+                from core.api.api_client import get_models_with_cache
+                config = self.trans_providers.get(provider_id, {})
+                models = get_models_with_cache(provider_id, config, api_key)
+                return True, models
+            except Exception as e:
+                return False, str(e)
+
+        from PyQt6.QtCore import QThread, pyqtSignal
+        class RefreshThread(QThread):
+            finished = pyqtSignal(bool, object)
+            def run(self):
+                ok, res = do_refresh()
+                self.finished.emit(ok, res)
+
+        self._refresh_thread = RefreshThread()
+        def on_done(ok, res):
+            self.btn_refresh_models.setEnabled(True)
+            self.btn_refresh_models.setText("🔄 刷新")
+            if ok:
+                self.combo_trans_model.clear()
+                self.combo_trans_model.addItems(res)
+                
+                # 持久化抓取到的模型列表
+                try:
+                    from core.api.api_client import save_providers_config
+                    if provider_id in self.trans_providers:
+                        self.trans_providers[provider_id]['models'] = res
+                        save_providers_config(self.trans_providers)
+                except Exception as e:
+                    logger.error(f"保存抓取的模型列表失败: {e}")
+
+                QMessageBox.information(self, "刷新成功", f"已从服务器获取并同步 {len(res)} 个可用模型。")
+            else:
+                QMessageBox.warning(self, "刷新失败", f"无法获取模型列表: {res}")
+        
+        self._refresh_thread.finished.connect(on_done)
+        self._refresh_thread.start()
+
+    def on_trans_base_edited(self):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'api' not in config: config['api'] = {}
+        config['api']['base_url'] = self.edit_trans_base.text()
+        cm.save(config)
+
+    def on_trans_model_changed(self, text):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'api' not in config: config['api'] = {}
+        config['api']['model'] = text
+        cm.save(config)
+
+    def on_trans_target_changed(self, index):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'ui' not in config: config['ui'] = {}
+        val = self.combo_trans_target.itemData(index)
+        config['ui']['target_language'] = val
+        cm.save(config)
+
+    def on_trans_batch_changed(self, val):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'translation' not in config: config['translation'] = {}
+        config['translation']['batch_size'] = val
+        cm.save(config)
+
+    def on_test_translation(self):
+        # 1. 获取当前临时配置 (确保未保存的内容也能测试)
+        cm = get_config_manager()
+        config = cm.load()
+        api_cfg = config.get('api', {}).copy() # 拷贝一份
+        
+        # 覆盖为当前 UI 上的值
+        prov_id = self.combo_trans_provider.itemData(self.combo_trans_provider.currentIndex())
+        from core.api.api_client import load_providers_config, APIClient
+        providers = load_providers_config()
+        p_cfg = providers.get(prov_id, {"id": prov_id, "api_type": "openai"}).copy()
+        
+        key = self.edit_trans_key.text()
+        model = self.combo_trans_model.currentText()
+        base = self.edit_trans_base.text()
+        target_lang = self.combo_trans_target.currentText()
+        
+        if not key:
+            QMessageBox.warning(self, "测试失败", "请输入 API 密钥。")
+            return
+            
+        if base: p_cfg['base_url'] = base
+        
+        client = APIClient(p_cfg, key, model)
+        
+        # 2. 模拟请求
+        self.btn_test_trans.setEnabled(False)
+        self.btn_test_trans.setText("测试中...")
+        
+        test_text = "Hello! This is a translation test for SubStudio."
+        
+        # 构建一个极简 prompt (剥离自 Worker)
+        import os, json
+        from core.utils.utils import get_project_root
+        prompt_path = os.path.join(get_project_root(), 'config', 'prompts', 'substudio_translate_en.txt')
+        try:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                prompt_tpl = f.read()
+        except:
+            prompt_tpl = "Translate to {target_lang}: {lines_json}"
+
+        prompt = prompt_tpl.format(
+            target_lang=target_lang,
+            lines_json=json.dumps([test_text], ensure_ascii=False),
+            context_text="(None)"
+        )
+        
+        def do_test():
+            try:
+                # 兼容 System/User 隔离
+                response = client.generate_content(
+                    system_prompt="你是一个翻译助手。",
+                    user_prompt=prompt,
+                    json_mode=True
+                )
+                
+                # 鲁棒解析
+                from core.utils.llm_utils import parse_json_from_response
+                data = parse_json_from_response(response['text'])
+                
+                if data and isinstance(data, dict):
+                    result = data.get("translated", ["无内容"])[0]
+                elif isinstance(data, list) and data:
+                    result = data[0]
+                else:
+                    result = "解析失败"
+                return True, result
+            except Exception as e:
+                return False, str(e)
+
+        # 简单的线程执行 (防止阻塞 UI)
+        from PyQt6.QtCore import QThread, pyqtSignal
+        class TestThread(QThread):
+            finished = pyqtSignal(bool, str)
+            def run(self):
+                ok, res = do_test()
+                self.finished.emit(ok, res)
+        
+        self._test_thread = TestThread()
+        def on_test_done(ok, res):
+            self.btn_test_trans.setEnabled(True)
+            self.btn_test_trans.setText("测试 API 连接")
+            if ok:
+                QMessageBox.information(self, "测试成功", f"原文: {test_text}\n\n译文: {res}")
+            else:
+                QMessageBox.critical(self, "测试失败", f"错误详情:\n{res}")
+        
+        self._test_thread.finished.connect(on_test_done)
+        self._test_thread.start()
 
     def _init_general_tab(self):
         layout = QVBoxLayout(self.tab_general)
@@ -59,19 +411,19 @@ class SubStudioSettingsDialog(QDialog):
     def _init_ai_tab(self):
         layout = QVBoxLayout(self.tab_ai)
         
-        # A. 模型来源策略 (Model Loading Strategy)
-        group_strategy = QGroupBox("转写配置 (Transcription Settings)")
+        # A. 模型来源策略
+        group_strategy = QGroupBox("转写配置")
         strat_layout = QVBoxLayout(group_strategy)
         
         # A1. 模型选择
-        strat_layout.addWidget(QLabel("AI 模型 (Select AI Model):"))
+        strat_layout.addWidget(QLabel("AI 模型"))
         source_layout = QHBoxLayout()
         self.combo_source = QComboBox()
         self.combo_source.setMinimumWidth(300)
         self.combo_source.currentIndexChanged.connect(self.on_source_changed)
         source_layout.addWidget(self.combo_source)
         
-        self.btn_refresh = QPushButton("刷新 (Refresh)")
+        self.btn_refresh = QPushButton("刷新")
         self.btn_refresh.clicked.connect(self.refresh_model_sources)
         source_layout.addWidget(self.btn_refresh)
         strat_layout.addLayout(source_layout)
@@ -84,23 +436,25 @@ class SubStudioSettingsDialog(QDialog):
         
         # A2. 语言选择
         lang_layout = QHBoxLayout()
-        lang_layout.addWidget(QLabel("识别语言 (Language):"))
+        lang_layout.addWidget(QLabel("识别语言"))
         self.combo_lang = QComboBox()
-        self.combo_lang.addItem("自动检测 (Auto)", None)
-        self.combo_lang.addItem("简体中文 (Chinese)", "zh")
-        self.combo_lang.addItem("英语 (English)", "en")
-        self.combo_lang.addItem("日语 (Japanese)", "ja")
-        self.combo_lang.addItem("韩语 (Korean)", "ko")
-        self.combo_lang.addItem("粤语 (Cantonese)", "yue")
-        self.combo_lang.addItem("法语 (French)", "fr")
-        self.combo_lang.addItem("德语 (German)", "de")
-        self.combo_lang.addItem("西班牙语 (Spanish)", "es")
-        self.combo_lang.addItem("俄语 (Russian)", "ru")
+        self.combo_lang.addItem("自动检测", None)
+        self.combo_lang.addItem("简体中文", "zh")
+        self.combo_lang.addItem("英语", "en")
+        self.combo_lang.addItem("日语", "ja")
+        self.combo_lang.addItem("韩语", "ko")
+        self.combo_lang.addItem("粤语", "yue")
+        self.combo_lang.addItem("法语", "fr")
+        self.combo_lang.addItem("德语", "de")
+        self.combo_lang.addItem("西班牙语", "es")
+        self.combo_lang.addItem("俄语", "ru")
         
         # 加载保存的设置
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("KaochePro", "SubStudio")
-        saved_lang = settings.value("transcription_lang", None)
+        cm = get_config_manager()
+        config = cm.load()
+        transcription_cfg = config.get('transcription', {})
+        
+        saved_lang = transcription_cfg.get("language", None)
         for i in range(self.combo_lang.count()):
             if self.combo_lang.itemData(i) == saved_lang:
                 self.combo_lang.setCurrentIndex(i)
@@ -108,35 +462,43 @@ class SubStudioSettingsDialog(QDialog):
         
         self.combo_lang.currentIndexChanged.connect(self.on_lang_changed)
         lang_layout.addWidget(self.combo_lang)
+        
+        self.chk_vad = QCheckBox("语音活动检测")
+        self.chk_vad.setToolTip("自动跳过音频中的静音和底噪，显著减少幻听。")
+        self.chk_vad.setChecked(transcription_cfg.get("vad_filter", True))
+        self.chk_vad.stateChanged.connect(self.on_vad_changed)
+        lang_layout.addSpacing(15)
+        lang_layout.addWidget(self.chk_vad)
+        
         lang_layout.addStretch()
         strat_layout.addLayout(lang_layout)
         
         strat_layout.addSpacing(5)
         
-        # A3. 自定义提示词 (Custom Prompt)
+        # A3. 自定义提示词
         prompt_layout = QVBoxLayout()
-        lbl_prompt = QLabel("引导提示词 (Initial Prompt - 可选):")
+        lbl_prompt = QLabel("引导提示词")
         lbl_prompt.setToolTip("输入一句话来引导 AI 的风格或指定话题。\n例如：'这是一段关于医学的中英双语对话。'")
         prompt_layout.addWidget(lbl_prompt)
         
         self.edit_prompt = QLineEdit()
         self.edit_prompt.setPlaceholderText("例如: English and German conversation. (留空则自动优化标点)")
-        self.edit_prompt.setText(settings.value("transcription_prompt", ""))
-        self.edit_prompt.textChanged.connect(self.on_prompt_changed)
+        self.edit_prompt.setText(transcription_cfg.get("prompt", ""))
+        self.edit_prompt.editingFinished.connect(self.on_prompt_edited) # 改用 edited 减少保存频率
         prompt_layout.addWidget(self.edit_prompt)
         strat_layout.addLayout(prompt_layout)
 
         layout.addWidget(group_strategy)
         
         # B. 内置模型下载管理
-        group_download = QGroupBox("内置模型下载 (Download Built-in Models)")
+        group_download = QGroupBox("内置模型下载")
         dl_layout = QVBoxLayout(group_download)
         
         # 源选择
         source_layout = QHBoxLayout()
-        source_layout.addWidget(QLabel("下载源 (Download Source):"))
-        self.radio_official = QRadioButton("官方源 (Hugging Face) [默认]") # 用户要求优先
-        self.radio_mirror = QRadioButton("国内镜像 (hf-mirror)")
+        source_layout.addWidget(QLabel("下载源"))
+        self.radio_official = QRadioButton("官方源") # 用户要求优先
+        self.radio_mirror = QRadioButton("国内镜像")
         self.radio_official.setChecked(True)
         
         source_layout.addWidget(self.radio_official)
@@ -184,7 +546,7 @@ class SubStudioSettingsDialog(QDialog):
         self.combo_source.clear()
         
         # 1. 默认项
-        self.combo_source.addItem("自动管理 (Auto-managed Download)", None)
+        self.combo_source.addItem("自动管理", None)
         
         # 2. 扫描本地模型
         local_models = self.manager.scan_local_models()
@@ -208,7 +570,7 @@ class SubStudioSettingsDialog(QDialog):
             self.combo_source.setCurrentIndex(0)
 
         # 4. 浏览选项
-        self.combo_source.addItem("浏览其他路径 (Browse Custom Path)...", "BROWSE")
+        self.combo_source.addItem("浏览其他路径...", "BROWSE")
         
         self.combo_source.blockSignals(False)
         self.update_path_info()
@@ -288,12 +650,145 @@ class SubStudioSettingsDialog(QDialog):
             QMessageBox.critical(self, "失败", f"下载出错: {msg}")
     def on_lang_changed(self, index):
         lang = self.combo_lang.itemData(index)
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("KaochePro", "SubStudio")
-        settings.setValue("transcription_lang", lang)
-        logger.info(f"Transcription language set to: {lang}")
+        cm = get_config_manager()
+        config = cm.load()
+        if 'transcription' not in config: config['transcription'] = {}
+        config['transcription']['language'] = lang
+        cm.save(config)
 
-    def on_prompt_changed(self, text):
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("KaochePro", "SubStudio")
-        settings.setValue("transcription_prompt", text)
+    def on_prompt_edited(self):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'transcription' not in config: config['transcription'] = {}
+        config['transcription']['prompt'] = self.edit_prompt.text()
+        cm.save(config)
+
+    def on_vad_changed(self, state):
+        cm = get_config_manager()
+        config = cm.load()
+        if 'transcription' not in config: config['transcription'] = {}
+        val = (state == Qt.CheckState.Checked or state == 2) # Handle both enum and int
+        config['transcription']['vad_filter'] = val
+        cm.save(config)
+
+    def _init_prompt_tab(self):
+        """提示词管理页 (LQA 同款)"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 15, 20, 15)
+        
+        # 列表
+        list_group = QGroupBox("提示词预设 (Presets)")
+        list_layout = QVBoxLayout(list_group)
+        
+        self.prompt_list = QListWidget()
+        self.prompt_list.currentRowChanged.connect(self.on_prompt_selected)
+        list_layout.addWidget(self.prompt_list)
+        
+        btn_layout = QHBoxLayout()
+        self.btn_prompt_new = QPushButton("➕ 新建")
+        self.btn_prompt_new.clicked.connect(self.on_prompt_add)
+        btn_layout.addWidget(self.btn_prompt_new)
+        
+        self.btn_prompt_edit = QPushButton("✏️ 编辑")
+        self.btn_prompt_edit.clicked.connect(self.on_prompt_modify)
+        btn_layout.addWidget(self.btn_prompt_edit)
+        
+        self.btn_prompt_delete = QPushButton("🗑️ 删除")
+        self.btn_prompt_delete.clicked.connect(self.on_prompt_remove)
+        btn_layout.addWidget(self.btn_prompt_delete)
+        
+        self.btn_prompt_import = QPushButton("📂 导入")
+        self.btn_prompt_import.clicked.connect(self.on_prompt_import_file)
+        btn_layout.addWidget(self.btn_prompt_import)
+        list_layout.addLayout(btn_layout)
+        layout.addWidget(list_group)
+        
+        # 预览
+        preview_group = QGroupBox("选中预览")
+        prev_layout = QVBoxLayout(preview_group)
+        self.prompt_preview = QTextEdit()
+        self.prompt_preview.setReadOnly(True)
+        self.prompt_preview.setPlaceholderText("选择左侧列表查看详情...")
+        prev_layout.addWidget(self.prompt_preview)
+        layout.addWidget(preview_group)
+        
+        # 加载数据
+        self.load_prompt_list()
+        
+        return page
+
+    def load_prompt_list(self):
+        self.prompt_list.clear()
+        from core.utils.utils import get_project_root
+        prompt_dir = os.path.join(get_project_root(), 'config', 'prompts')
+        if not os.path.exists(prompt_dir): return
+        
+        # 隐藏系统级指令
+        system_masks = ['alignment', '.translate_en', '.alignment', '.meta_prompt_generator']
+        
+        for fname in os.listdir(prompt_dir):
+            if fname.endswith('.txt'):
+                name = fname[:-4]
+                if name not in system_masks and not name.startswith('.'):
+                    self.prompt_list.addItem(name)
+
+    def on_prompt_selected(self, row):
+        if row < 0:
+            self.prompt_preview.clear()
+            return
+        name = self.prompt_list.item(row).text()
+        from core.utils.utils import get_project_root
+        path = os.path.join(get_project_root(), 'config', 'prompts', f"{name}.txt")
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self.prompt_preview.setPlainText(f.read())
+            except:
+                self.prompt_preview.setPlainText("加载失败")
+
+    def on_prompt_add(self):
+        from ui.dialogs.prompt_editor import PromptEditorDialog
+        dialog = PromptEditorDialog(parent=self)
+        if dialog.exec():
+            self.load_prompt_list()
+
+    def on_prompt_modify(self):
+        row = self.prompt_list.currentRow()
+        if row < 0: return
+        name = self.prompt_list.item(row).text()
+        from ui.dialogs.prompt_editor import PromptEditorDialog
+        dialog = PromptEditorDialog(prompt_name=name, parent=self)
+        if dialog.exec():
+            # 刷新预览
+            self.on_prompt_selected(row)
+
+    def on_prompt_remove(self):
+        row = self.prompt_list.currentRow()
+        if row < 0: return
+        name = self.prompt_list.item(row).text()
+        
+        reply = QMessageBox.question(self, "确认删除", f"确定要永久删除提示词预设 '{name}' 吗？", 
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            from core.utils.utils import get_project_root
+            path = os.path.join(get_project_root(), 'config', 'prompts', f"{name}.txt")
+            try:
+                if os.path.exists(path): os.remove(path)
+                self.load_prompt_list()
+                self.prompt_preview.clear()
+            except Exception as e:
+                QMessageBox.warning(self, "失败", f"删除失败: {e}")
+
+    def on_prompt_import_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择提示词文件", "", "Text Files (*.txt)")
+        if path:
+            try:
+                import shutil
+                from core.utils.utils import get_project_root
+                dest_dir = os.path.join(get_project_root(), 'config', 'prompts')
+                shutil.copy(path, dest_dir)
+                self.load_prompt_list()
+                QMessageBox.information(self, "成功", "导入成功")
+            except Exception as e:
+                QMessageBox.warning(self, "失败", f"导入失败: {e}")

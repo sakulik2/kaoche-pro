@@ -1,4 +1,5 @@
 import logging
+import os
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QMenuBar, QFileDialog, QSplitter, QMessageBox, QProgressDialog
 from PyQt6.QtGui import QAction
 from PyQt6.QtCore import Qt, QSettings, QTimer
@@ -160,6 +161,10 @@ class SubStudioMainView(QWidget):
         self.current_time_ms = 0.0
         self._setup_playback_sync()
 
+    def statusBar(self):
+        """兼容 QMainWindow 的 statusBar() 方法"""
+        return self._status_bar
+
     def _setup_playback_sync(self):
         """设置高性能播控同步时钟 (60FPS)"""
         self.sync_timer = QTimer(self)
@@ -246,7 +251,16 @@ class SubStudioMainView(QWidget):
             self._trans_dialog.show()
             
         if msg:
-            self._trans_dialog.setLabelText(msg)
+            # 优雅处理检测到的语言信息块，使其更醒目 [DETECT: zh (0.99)]
+            import re
+            m = re.search(r"DETECTION:\s*(\w+)\s*\(([\d\.]+)\)", msg)
+            if m:
+                lang_code = m.group(1)
+                prob = float(m.group(2))
+                display_msg = f"<b>检测到语种: {lang_code.upper()} (置信度: {prob*100:.1f}%)</b>"
+                self._trans_dialog.setLabelText(display_msg)
+            else:
+                self._trans_dialog.setLabelText(msg)
         if percent >= 0:
             self._trans_dialog.setValue(percent)
 
@@ -297,14 +311,87 @@ class SubStudioMainView(QWidget):
             self._open_settings()
             return
             
-        # 3. 提取语言设置与自定义提示词
-        lang = self.settings.value("transcription_lang", None)
-        prompt = self.settings.value("transcription_prompt", "")
+        # 3. 提取语言设置与自定义提示词 (参考 LQA 使用共享配置)
+        from core.utils.config_manager import get_config_manager
+        cm = get_config_manager()
+        config = cm.load()
+        transcription_cfg = config.get('transcription', {})
+
+        lang = transcription_cfg.get("language", None)
+        prompt = transcription_cfg.get("prompt", "")
+        vad = transcription_cfg.get("vad_filter", True)
         
         # 4. 启动
-        success, msg = self.engine.start_transcription(video_path, language=lang, initial_prompt=prompt)
+        success, msg = self.engine.start_transcription(video_path, language=lang, initial_prompt=prompt, vad_filter=vad)
         if not success:
             QMessageBox.warning(self, "错误", f"无法启动: {msg}")
+
+    def on_auto_translate(self):
+        """发起 AI 自动翻译"""
+        from PyQt6.QtWidgets import QInputDialog, QProgressDialog
+        if not self.store.subs.events:
+            QMessageBox.information(self, "提示", "当前没有可翻译的字幕内容。")
+            return
+            
+        # 1. 弹出模式选择
+        items = ["多轨分层 (翻译至新轨道并隐藏原文)", "双语对照 (在原轨拼接译文与原文)"]
+        mode_str, ok = QInputDialog.getItem(self, "自动翻译器", "请选择处理模式:", items, 0, False)
+        if not (ok and mode_str): return
+        
+        mode = "bilingual" if "双语" in mode_str else "multitrack"
+        
+        # 2. 准备组件
+        from core.api.api_client import APIClient
+        from ..core.translation_service import TranslationWorker, TranslationService
+        from core.utils.config_manager import get_config_manager
+        
+        cm = get_config_manager()
+        config = cm.load()
+        api_cfg = config.get('api', {})
+        trans_cfg = config.get('translation', {})
+        ui_cfg = config.get('ui', {})
+
+        prov = api_cfg.get("provider", "openai")
+        key = cm.get_api_key(cm.password, provider_id=prov) or ""
+        model = api_cfg.get("model", "gpt-4o")
+        base = api_cfg.get("base_url", "")
+        target = ui_cfg.get("target_language", "zh")
+        batch_size = int(trans_cfg.get("batch_size", 12))
+        
+        if not key:
+            QMessageBox.warning(self, "配置不足", "请先在“设置 -> 文本翻译”中配置 API 密钥。")
+            return
+            
+        from core.api.api_client import load_providers_config
+        providers = load_providers_config()
+        cfg = providers.get(prov, {"id": prov, "api_type": "openai"}).copy()
+        if base: cfg["base_url"] = base
+        
+        client = APIClient(cfg, key, model)
+        
+        # 3. 启动 Worker
+        dialog = QProgressDialog("正在准备翻译任务...", "取消", 0, 100, self)
+        dialog.setWindowTitle("自动翻译")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setAutoClose(True)
+        dialog.show()
+        
+        worker = TranslationWorker(self.store, client, target, mode, batch_size=batch_size)
+        worker.progress.connect(lambda msg, p: (dialog.setLabelText(msg), dialog.setValue(p)))
+        
+        def on_finished(success, results):
+            dialog.close()
+            if success:
+                TranslationService.apply_translation(self.store, results, mode)
+                QMessageBox.information(self, "完成", f"已成功翻译 {len(results)} 条字幕。")
+            else:
+                QMessageBox.critical(self, "错误", f"翻译失败: {results[0] if results else '未知错误'}")
+                
+        worker.finished.connect(on_finished)
+        dialog.canceled.connect(worker.terminate)
+        worker.start()
+        # 保持引用防回收
+        self._active_worker = worker
 
     def _init_menubar(self):
         """初始化菜单栏"""
@@ -366,11 +453,16 @@ class SubStudioMainView(QWidget):
         self.action_dark_mode.triggered.connect(self.toggle_theme)
         view_menu.addAction(self.action_dark_mode)
         
-        # AI 生成菜单 (Tools)
+        # AI 工具子菜单
         tools_menu = menubar.addMenu("工具")
-        action_gen = QAction("✨ AI 生成字幕", self)
-        action_gen.triggered.connect(self._start_transcription)
-        tools_menu.addAction(action_gen)
+        
+        action_transcribe = QAction("字幕生成", self)
+        action_transcribe.triggered.connect(self._start_transcription)
+        tools_menu.addAction(action_transcribe)
+        
+        action_translate = QAction("自动翻译", self)
+        action_translate.triggered.connect(self.on_auto_translate)
+        tools_menu.addAction(action_translate)
         
         self.main_layout.addWidget(menubar)
         
@@ -383,9 +475,10 @@ class SubStudioMainView(QWidget):
         # A. 菜单栏
         self._init_menubar()
         
-        # 状态栏
+        # 状态栏 (由于继承自 QWidget，需要手动管理)
         from PyQt6.QtWidgets import QStatusBar
-        self.setStatusBar(QStatusBar(self))
+        self._status_bar = QStatusBar(self)
+        self.main_layout.addWidget(self._status_bar)
         
         # 应用初始主题
         current_theme = self.settings.value("theme", "light")
@@ -415,11 +508,22 @@ class SubStudioMainView(QWidget):
         self.sub_list.request_seek.connect(self.player.seek_to_time)
         self.tabs.addTab(self.sub_list, "列表")
         
-        self.style_editor = StyleEditorWidget(self.store)
-        self.tabs.addTab(self.style_editor, "样式")
-        
+        # 使用 QScrollArea 封装分组编辑器
+        from PyQt6.QtWidgets import QScrollArea, QFrame
+        self.group_scroll = QScrollArea()
+        self.group_scroll.setWidgetResizable(True)
+        self.group_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.group_editor = GroupEditorWidget(self.store)
-        self.tabs.addTab(self.group_editor, "分组")
+        self.group_scroll.setWidget(self.group_editor)
+        self.tabs.addTab(self.group_scroll, "分组")
+
+        # 使用 QScrollArea 封装样式编辑器
+        self.style_scroll = QScrollArea()
+        self.style_scroll.setWidgetResizable(True)
+        self.style_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.style_editor = StyleEditorWidget(self.store)
+        self.style_scroll.setWidget(self.style_editor)
+        self.tabs.addTab(self.style_scroll, "样式")
         
         # 3. 时间轴
         from .components.timeline.container import TimelineContainer
@@ -452,12 +556,12 @@ class SubStudioMainView(QWidget):
             self.top_h_splitter.hide()
             
             # 确保 Tabs 中包含列表
-            if self.tabs.indexOf(self.sub_list) == -1:
-                self.tabs.insertTab(0, self.sub_list, "列表")
-            
-            # 手动调整层级
             self.v_splitter.addWidget(self.player_container)
             self.v_splitter.addWidget(self.tabs)
+            
+            # 在经典模式下，确保列表 Tab 在第一个
+            if self.tabs.indexOf(self.sub_list) == -1:
+                self.tabs.insertTab(0, self.sub_list, "列表")
             
             self.v_splitter.setStretchFactor(0, 3)
             self.v_splitter.setStretchFactor(1, 7)
@@ -585,6 +689,9 @@ class SubStudioMainView(QWidget):
         # 绑定播放状态以控制动画时钟 (60FPS Loop)
         self.player.playback_started.connect(lambda: self.overlay.set_playing_state(True))
         self.player.playback_paused.connect(lambda: self.overlay.set_playing_state(False))
+        
+        # 绑定样式预览信号
+        self.style_editor.previewRequested.connect(self.overlay.set_preview_style)
         self.player.playback_stopped.connect(lambda: self.overlay.set_playing_state(False))
         
         # D. 冲突解决：禁用 Player 原生字幕
@@ -768,3 +875,39 @@ class SubStudioMainView(QWidget):
                  self.timeline.remove_ghost_block()
                  return
         super().keyReleaseEvent(event)
+    def on_export_video(self):
+        """触发视频压制导出流程"""
+        if not self.player.current_video:
+            QMessageBox.warning(self, "未加载视频", "请先加载一个视频文件。")
+            return
+            
+        from .dialogs.export_dialog import ExportDialog
+        dialog = ExportDialog(self.player.current_video, self.store, self)
+        if dialog.exec():
+            params = dialog.accept_params
+            self._do_transcode(params)
+            
+    def _do_transcode(self, params):
+        from ..core.export_service import ExportWorker
+        
+        progress = QProgressDialog("正在压制视频...", "取消", 0, 100, self)
+        progress.setWindowTitle("视频压制中")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        
+        worker = ExportWorker(params, self.store)
+        worker.progress.connect(progress.setValue)
+        
+        def on_finished(success, msg):
+            progress.close()
+            if success:
+                QMessageBox.information(self, "导出成功", msg)
+            else:
+                QMessageBox.critical(self, "导出失败", msg)
+                
+        worker.finished.connect(on_finished)
+        progress.canceled.connect(worker.cancel)
+        worker.start()
+        # 保持引用
+        self._export_worker = worker

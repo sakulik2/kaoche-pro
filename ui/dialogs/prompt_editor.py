@@ -169,33 +169,28 @@ class PromptEditorDialog(QDialog):
             return
         
         try:
-            # 获取API客户端
+            # 使用 ConfigManager 安全获取配置
+            from core.utils.config_manager import get_config_manager
             from core.api.api_client import APIClient, load_providers_config
-            import json
             
-            # 加载设置
-            settings_file = 'config/settings.json'
-            if os.path.exists(settings_file):
-                with open(settings_file, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-            else:
-                QMessageBox.warning(self, self.tr("错误"), self.tr("请先在设置中配置API"))
-                return
+            cm = get_config_manager()
+            settings = cm.load()
             
-            providers = load_providers_config()
             provider_id = settings.get('api', {}).get('provider', 'openai')
+            providers = load_providers_config()
             provider_config = providers.get(provider_id)
             
             if not provider_config:
                 QMessageBox.warning(self, self.tr("错误"), self.tr("找不到提供商: {}").format(provider_id))
                 return
             
-            api_key = settings.get('api', {}).get('api_key', '')
-            model = settings.get('api', {}).get('model', provider_config['default_model'])
-            
+            # 使用标准化方法获取 Key (处理加密与多提供商)
+            api_key = cm.get_api_key(cm.password)
             if not api_key:
                 QMessageBox.warning(self, self.tr("警告"), self.tr("请在设置中配置API密钥"))
                 return
+                
+            model = settings.get('api', {}).get('model', provider_config['default_model'])
             
             # 加载meta-prompt
             meta_prompt = self.load_meta_prompt()
@@ -274,10 +269,17 @@ class PromptEditorDialog(QDialog):
             QMessageBox.warning(self, self.tr("错误"), self.tr("Prompt内容不能为空"))
             return
         
-        # 确保不覆盖系统prompt
-        system_prompts = ['alignment', '.meta_prompt_generator']
-        if name in system_prompts:
-            QMessageBox.warning(self, self.tr("错误"), self.tr("'{}' 是系统保留名称，请使用其他名称").format(name))
+        # 确保不覆盖系统prompt (包含所有隐藏的系统指令)
+        restricted = [
+            'alignment', '.alignment', 
+            'substudio_translate_en', '.translate_en',
+            'lqa_strict', '.lqa_strict',
+            'lqa_gentle', '.lqa_gentle',
+            'lqa_global', '.lqa_global',
+            '.meta_prompt_generator'
+        ]
+        if name in restricted or name.startswith('.'):
+            QMessageBox.warning(self, self.tr("错误"), self.tr("'{}' 是系统预设或隐藏格式，请使用其他名称").format(name))
             return
         
         try:

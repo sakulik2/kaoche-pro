@@ -394,7 +394,7 @@ class LqaMainView(QWidget):
         return client
 
     def load_prompt_template(self):
-        path = 'config/prompts/lqa_strict.txt'
+        path = 'config/prompts/.lqa_strict.txt'
         if os.path.exists(path):
             with open(path, 'r', encoding='utf-8') as f: return f.read()
         return "请分析以下字幕的翻译质量并评分。"

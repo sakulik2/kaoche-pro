@@ -128,40 +128,86 @@ class StyleEditorWidget(QWidget):
         f_form.addRow(s_row)
         self.adv_layout.addWidget(f_box)
         
-        # 视觉
+        # 视觉组：主要颜色与特效
         v_box = QGroupBox("视觉")
         v_main = QVBoxLayout(v_box)
-        v_main.setContentsMargins(5, 5, 5, 5)
+        v_main.setContentsMargins(2, 6, 2, 2) # 更紧凑的边距
+        v_main.setSpacing(4)
+        
+        # 颜色行
         c_row = QHBoxLayout()
-        self.btn_c_pri = self._create_color_btn("T", "primarycolor", "文本颜色")
+        c_row.setSpacing(4) # 紧凑间距
+        
+        self.btn_c_pri = self._create_color_btn("T", "primarycolor", "主文本色")
         self.btn_c_out = self._create_color_btn("O", "outlinecolor", "描边颜色")
         self.btn_c_sha = self._create_color_btn("S", "backcolor", "阴影颜色")
-        c_row.addWidget(self.btn_c_pri); c_row.addWidget(self.btn_c_out); c_row.addWidget(self.btn_c_sha)
-        c_row.addWidget(self.btn_c_pri); c_row.addWidget(self.btn_c_out); c_row.addWidget(self.btn_c_sha)
-        v_main.addLayout(c_row)
         
-        # 渐变控制 (Gradient)
-        grad_row = QHBoxLayout()
-        self.chk_gradient = QCheckBox("开启渐变 (左→右)")
+        c_row.addWidget(self.btn_c_pri)
+        c_row.addWidget(self.btn_c_out)
+        c_row.addWidget(self.btn_c_sha)
+        
+        # 渐变控制 (紧凑)
+        self.grad_container = QWidget()
+        grad_layout = QHBoxLayout(self.grad_container)
+        grad_layout.setContentsMargins(0, 0, 0, 0)
+        grad_layout.setSpacing(2)
+        
+        # 使用 Icon 代替文字 "渐" 以节省空间，或者使用更窄的 Button
+        self.chk_gradient = QCheckBox("渐")
+        self.chk_gradient.setToolTip("开启水平渐变 (Gradient)")
+        self.chk_gradient.setFixedWidth(32) 
         self.chk_gradient.toggled.connect(lambda c: self.update_style("gradient_enabled", c))
         
         self.btn_c_grad = self._create_color_btn("E", "gradient_end", "渐变终点色")
-        self.btn_c_grad.setEnabled(False) # 默认禁用
+        self.btn_c_grad.setEnabled(False) 
         
-        grad_row.addWidget(self.chk_gradient)
-        grad_row.addWidget(self.btn_c_grad)
-        grad_row.addStretch()
-        v_main.addLayout(grad_row)
+        grad_layout.addWidget(self.chk_gradient)
+        grad_layout.addWidget(self.btn_c_grad)
+        
+        # 添加分隔线视觉效果
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        line.setFixedHeight(20)
+        
+        c_row.addSpacing(4)
+        c_row.addWidget(line)
+        c_row.addSpacing(4)
+        c_row.addWidget(self.grad_container)
+        c_row.addStretch()
+        
+        v_main.addLayout(c_row)
         
         p_form = QFormLayout()
-        self.spin_out = QDoubleSpinBox(); self.spin_out.setRange(0, 50)
+        self.spin_out = QDoubleSpinBox(); self.spin_out.setRange(0, 100); self.spin_out.setDecimals(1)
         self.spin_out.valueChanged.connect(lambda v: self.update_style("outline", v))
-        p_form.addRow("边:", self.spin_out)
-        self.spin_sha = QDoubleSpinBox(); self.spin_sha.setRange(0, 50)
+        p_form.addRow("描边大小:", self.spin_out)
+        self.spin_sha = QDoubleSpinBox(); self.spin_sha.setRange(0, 100); self.spin_sha.setDecimals(1)
         self.spin_sha.valueChanged.connect(lambda v: self.update_style("shadow", v))
-        p_form.addRow("影:", self.spin_sha)
+        p_form.addRow("阴影深度:", self.spin_sha)
         v_main.addLayout(p_form)
         self.adv_layout.addWidget(v_box)
+
+        # 位置调节
+        pos_box = QGroupBox("位置")
+        pos_form = QFormLayout(pos_box)
+        pos_form.setContentsMargins(5, 5, 5, 5)
+        pos_form.setSpacing(4)
+        
+        self.combo_align = QComboBox()
+        # 九宫格映射
+        self.combo_align.addItems(["左上(7)", "中上(8)", "右上(9)", 
+                                   "左中(4)", "正中(5)", "右中(6)", 
+                                   "左下(1)", "下中(2)", "右下(3)"])
+        self.align_map = [7, 8, 9, 4, 5, 6, 1, 2, 3]
+        self.combo_align.currentIndexChanged.connect(self.on_align_changed)
+        pos_form.addRow("对齐方式:", self.combo_align)
+        
+        self.spin_margin_v = QSpinBox()
+        self.spin_margin_v.setRange(0, 2000); self.spin_margin_v.setSuffix("px")
+        self.spin_margin_v.valueChanged.connect(lambda v: self.update_style("marginv", v))
+        pos_form.addRow("垂直偏移:", self.spin_margin_v)
+        self.adv_layout.addWidget(pos_box)
         
         # 动作
         act_row = QHBoxLayout()
@@ -216,15 +262,23 @@ class StyleEditorWidget(QWidget):
         return self.store.subs.styles[name]
 
     def load_from_store(self):
-        if not self.store.subs: return
+        # 即使没有 subtitle 文件主体，也允许进行样式管理（以便预设起效）
         self._is_loading = True
         self.style_list.blockSignals(True)
         self.style_list.clear()
-        styles = sorted(self.store.subs.styles.keys())
+        
+        # 保护性获取样式表，如果 subs 不存在（虽然初始化时已创建），则提供默认容器
+        styles_map = self.store.subs.styles if self.store.subs else {}
+        styles = sorted(styles_map.keys())
+        
         self.style_list.addItems(styles)
         if self._current_style_name in styles:
             items = self.style_list.findItems(self._current_style_name, Qt.MatchFlag.MatchExactly)
             if items: self.style_list.setCurrentItem(items[0])
+        elif styles:
+            self._current_style_name = styles[0]
+            self.style_list.setCurrentRow(0)
+            
         self.style_list.blockSignals(False)
         self._update_fields_from_style()
         self.refresh_presets()
@@ -251,7 +305,6 @@ class StyleEditorWidget(QWidget):
         def to_qc(c): return QColor(c.r, c.g, c.b, 255-c.a)
         self._update_color_btn_visual(self.btn_c_pri, to_qc(style.primarycolor))
         self._update_color_btn_visual(self.btn_c_out, to_qc(style.outlinecolor))
-        self._update_color_btn_visual(self.btn_c_out, to_qc(style.outlinecolor))
         self._update_color_btn_visual(self.btn_c_sha, to_qc(style.backcolor))
         
         # 提取渐变数据
@@ -263,6 +316,25 @@ class StyleEditorWidget(QWidget):
         self._update_color_btn_visual(self.btn_c_grad, grad_end_c)
         
         self._populate_font_styles(style.fontname)
+
+        # 刷新位置属性
+        self.spin_margin_v.setValue(style.marginv)
+        try:
+            val = style.alignment
+            idx = self.align_map.index(val)
+            self.combo_align.setCurrentIndex(idx)
+        except:
+            self.combo_align.setCurrentIndex(7)
+
+        # 还原 VF 细选样式
+        style_name = g_meta.get("font_style")
+        if style_name:
+            idx = self.combo_f_style.findText(style_name)
+            if idx >= 0:
+                self.combo_f_style.blockSignals(True)
+                self.combo_f_style.setCurrentIndex(idx)
+                self.combo_f_style.blockSignals(False)
+
         self.blockSignals(False)
 
     def update_style(self, attr, value):
@@ -338,7 +410,14 @@ class StyleEditorWidget(QWidget):
         txt = self.combo_f_style.currentText(); style = self.get_current_style()
         style.bold = any(kw in txt for kw in ["Bold", "Black", "Heavy"])
         style.italic = any(kw in txt for kw in ["Italic", "Oblique"])
-        style._qt_style_name = txt; self.update_style("fontname", style.fontname)
+        style._qt_style_name = txt
+        
+        # 记录 VF 细选样式名
+        if self._current_style_name not in self.store.extra_style_data:
+            self.store.extra_style_data[self._current_style_name] = {}
+        self.store.extra_style_data[self._current_style_name]["font_style"] = txt
+        
+        self.update_style("fontname", style.fontname)
 
     def on_font_family_changed(self, font):
         if self._is_loading: return
@@ -365,12 +444,29 @@ class StyleEditorWidget(QWidget):
     def on_preset_selected(self, name):
         data = self.preset_manager.load_preset(name)
         if data:
-            from pysubs2 import SSAStyle
-            ns = SSAStyle()
+            # 应用到【当前正在编辑】的样式，而不是以预设名新建样式
+            target_name = self._current_style_name
+            style = self.get_current_style() # 确保样式存在
+            
             for k, v in data.items():
-                if hasattr(ns, k): setattr(ns, k, v)
-            self.store.subs.styles[name] = ns; self._current_style_name = name; self.store._mark_dirty(); self.load_from_store()
+                if k != "extra_data" and hasattr(style, k):
+                    setattr(style, k, v)
+            
+            # 恢复扩展数据到当前样式
+            self.store.extra_style_data[target_name] = data.get("extra_data", {})
+            self.store._mark_dirty()
+            self.store.dataChanged.emit()
+            self._update_fields_from_style()
+
+    def on_align_changed(self, index):
+        if self._is_loading: return
+        val = self.align_map[index]
+        self.update_style("alignment", val)
 
     def save_preset(self):
         name, ok = QInputDialog.getText(self, "存预设", "名称:")
-        if ok and name: self.preset_manager.save_preset(name, self.get_current_style()); self.refresh_presets()
+        if ok and name: 
+            style = self.get_current_style()
+            extra = self.store.extra_style_data.get(self._current_style_name, {})
+            self.preset_manager.save_preset(name, style, extra)
+            self.refresh_presets()

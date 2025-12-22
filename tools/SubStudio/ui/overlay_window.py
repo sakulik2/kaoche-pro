@@ -229,6 +229,12 @@ class OverlayWindow(QWidget):
         for idx in active_indices:
             ev = self.store.get_event(idx)
             if ev:
+                # 显隐判断 (多轨管理核心)
+                # event.name 对应的是分组名
+                gname = ev.name if ev.name else "Default"
+                if not self.store.is_group_visible(gname):
+                    continue
+                    
                 self._draw_event(painter, ev, current_ms)
 
     def set_preview_style(self, style):
@@ -239,20 +245,32 @@ class OverlayWindow(QWidget):
         self.update()
 
     def _draw_preview(self, painter: QPainter, style):
-        """在屏幕中心绘制预览文本"""
+        """在屏幕上绘制预览文本，尊重样式的对齐和边距"""
         # 构建一个模拟事件
         from pysubs2 import SSAEvent
-        res_x = float(self.store.subs.info.get("PlayResX", 1280))
-        res_y = float(self.store.subs.info.get("PlayResY", 720))
+        import re
         
-        text = rf"{{\an5\pos({res_x/2},{res_y/2})}}预览文字 Preview"
-        dummy_ev = SSAEvent(text=text)
+        # 尝试获取当前时间点的活跃字幕文本，作为预览内容（更有代入感）
+        current_ms = self.interpolated_time_ms
+        active_indices = self._find_active_event_indices(current_ms)
+        
+        preview_text = "样式预览效果 (Style Preview)"
+        if active_indices:
+            ev = self.store.get_event(active_indices[0])
+            if ev:
+                # 移除所有 ASS 标签以纯文本显示
+                clean = re.sub(r"\{.*?\}", "", ev.text).strip()
+                if clean:
+                    preview_text = clean.split('\n')[0] # 取第一行即可
+
+        # 不要硬编码 \an 和 \pos，以便预览 Style 自身的对齐和边距属性
+        dummy_ev = SSAEvent(text=preview_text)
         dummy_ev.style = "Dummy" 
         
         old_style = self.store.subs.styles.get("Dummy")
         self.store.subs.styles["Dummy"] = style
         try:
-            self._draw_event(painter, dummy_ev, 0)
+            self._draw_event(painter, dummy_ev, current_ms)
         finally:
             if old_style: self.store.subs.styles["Dummy"] = old_style
             else: del self.store.subs.styles["Dummy"]
@@ -267,8 +285,9 @@ class OverlayWindow(QWidget):
         base_style_key = (
             style.fontname, style.fontsize, style.bold, style.italic,
             str(style.primarycolor), str(style.outlinecolor), str(style.backcolor),
-            style.alignment, style.borderstyle, style.shadow,
-            style.marginl, style.marginr, style.marginv
+            style.alignment, style.borderstyle, style.outline, style.shadow,
+            style.marginl, style.marginr, style.marginv,
+            self.store.extra_style_data.get(ev.style, {}).get("font_style", "")
         )
         return self._get_parsed_event_data(ev.text, base_style_key)
 
@@ -314,7 +333,8 @@ class OverlayWindow(QWidget):
         eff_shadow = eff_shadow * scale_ratio
         
         # 字体缩放
-        scaled_font_key = (eff_key[0], int(eff_key[1] * scale_ratio), eff_key[2], eff_key[3])
+        # Key 现在包含 font_style 名: (fontname, size, b, i, style_name)
+        scaled_font_key = (eff_key[0], int(eff_key[1] * scale_ratio), eff_key[2], eff_key[3], eff_key[4])
         font = self._get_style_font_by_key(scaled_font_key)
         
         if parsed['pos']:
@@ -375,7 +395,7 @@ class OverlayWindow(QWidget):
         带缓存的 ASS标签解析
         """
         # 解包默认值
-        (s_font, s_size, s_bold, s_italic, s_pri, s_out, s_back, s_align, s_bord, s_shad, s_ml, s_mr, s_mv) = style_key
+        (s_font, s_size, s_bold, s_italic, s_pri, s_out, s_back, s_align, s_bord_style, s_bord, s_shad, s_ml, s_mr, s_mv, s_style_name) = style_key
         
         # 0. 动画检测 (Optimization Flag)
         # \fad, \move, \t, \k (Karaoke) imply animation
@@ -404,7 +424,7 @@ class OverlayWindow(QWidget):
         eff_italic = s_italic
         if i_match: eff_italic = (i_match.group(1) == '1')
         
-        eff_font_key = (eff_fontname, eff_fontsize, eff_bold, eff_italic)
+        eff_font_key = (eff_fontname, eff_fontsize, eff_bold, eff_italic, s_style_name)
             
         # 3. 颜色覆盖 (Color Overrides)
         c_match = re.search(r"\\(?:c|1c)&H([0-9A-Fa-f]+)&", text)
@@ -465,8 +485,8 @@ class OverlayWindow(QWidget):
             shadow_rect = total_rect.translated(shad_depth, shad_depth)
             total_rect = total_rect.united(shadow_rect)
             
-        # 稍微 扩一点避免边缘裁剪
-        brect = total_rect.toAlignedRect().adjusted(-2, -2, 2, 2)
+        # 稍微 扩一点避免边缘裁剪 (增加到 10px 以支持超大描边)
+        brect = total_rect.toAlignedRect().adjusted(-10, -10, 10, 10)
         
         if brect.width() <= 0 or brect.height() <= 0:
             return QPixmap(), QPointF(0,0)
@@ -603,7 +623,8 @@ class OverlayWindow(QWidget):
             current_y += fm.height()
             
         outline_path = None
-        eff_outline_w = outline_width * scale_ratio
+        # 注意：outline_width 应该是已经根据 scale_ratio 缩放过的绝对像素值
+        eff_outline_w = outline_width 
         if eff_outline_w >= 0.1:
             stroker = QPainterPathStroker()
             stroker.setWidth(eff_outline_w * 2)
@@ -618,23 +639,21 @@ class OverlayWindow(QWidget):
         if key in self.font_cache:
             return self.font_cache[key]
         
-        fontname, pixel_size, bold, italic = key
+        # key: (fontname, pixel_size, bold, italic, style_name)
+        fontname, pixel_size, bold, italic, style_name = key
         
         if pixel_size < 1: pixel_size = 10
         
-        font_families = QFontDatabase.families()
-        target_family = fontname
-        is_found = False
-        for f in font_families:
-            if f.lower() == target_family.lower():
-                target_family = f; is_found = True; break
-        
-        if not is_found: target_family = "Microsoft YaHei"
-        
-        font = QFont(target_family)
+        font = QFont(fontname)
         font.setPixelSize(pixel_size)
-        font.setBold(bold)
-        font.setItalic(italic)
+        
+        # 如果存在具体的 VF 样式名，则优先使用它实现精准字重控制
+        if style_name:
+            font.setStyleName(style_name)
+        else:
+            font.setBold(bold)
+            font.setItalic(italic)
+            
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
         
         self.font_cache[key] = font
@@ -654,10 +673,26 @@ class OverlayWindow(QWidget):
         return flags
 
     def _parse_ass_color(self, ass_color):
-        try:
+        """支持 pysubs2.Color 对象和 &HAABBGGRR& 格式字符串"""
+        if hasattr(ass_color, 'r'):
             return QColor(ass_color.r, ass_color.g, ass_color.b, 255 - ass_color.a)
-        except:
-            return QColor(Qt.GlobalColor.white)
+        
+        # 处理字符串格式 &H(AA)BBGGRR&
+        if isinstance(ass_color, str) and "&H" in ass_color:
+            s = ass_color.strip("&H").strip("&")
+            try:
+                # 倒着取 (ASS 是 BGR 顺序)
+                if len(s) >= 6:
+                    r = int(s[-2:], 16)
+                    g = int(s[-4:-2], 16)
+                    b = int(s[-6:-4], 16)
+                    a = 0
+                    if len(s) >= 8: # 包含 Alpha
+                        a = int(s[-8:-6], 16)
+                    return QColor(r, g, b, 255 - a)
+            except:
+                pass
+        return QColor(Qt.GlobalColor.white)
 
     def clear(self):
         """清空画面"""

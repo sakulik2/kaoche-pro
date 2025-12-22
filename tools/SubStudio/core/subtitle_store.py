@@ -28,6 +28,7 @@ class SubtitleStore(QObject):
         # 分组管理数据结构
         # groups: { group_name: { "style": style_name, "color": "#RRGGBB" } }
         self.groups = {}
+        self.visible_groups = set() # 记录可见的分组名
         self._init_default_group()
 
         # 样式扩展元数据 (用于存储 Gradient 等非标准运行时属性)
@@ -221,6 +222,7 @@ class SubtitleStore(QObject):
                 "style": "Default",
                 "color": "#3498db"  # 蓝色
             }
+            self.visible_groups.add("Default")
     
     def add_group(self, name: str, style: str = "Default", color: str = "#3498db"):
         """添加新分组"""
@@ -310,3 +312,19 @@ class SubtitleStore(QObject):
     def get_all_groups(self):
         """获取所有分组"""
         return dict(self.groups)
+
+    # --- 显隐控制 ---
+    def set_group_visibility(self, name: str, visible: bool):
+        """设置分组的渲染可见性"""
+        if visible:
+            self.visible_groups.add(name)
+        else:
+            self.visible_groups.discard(name)
+        self.dataChanged.emit() # 触发 Overlay 重绘
+
+    def is_group_visible(self, name: str) -> bool:
+        """检查分组是否可见"""
+        # 如果 name 不在 groups 里（可能是脏数据），默认不可见
+        if name not in self.groups:
+            return False
+        return name in self.visible_groups

@@ -374,15 +374,11 @@ class SettingsDialog(QDialog):
     def _save_providers_config(self):
         """保存提供商配置"""
         try:
-            from core.utils.utils import get_project_root
-            root = get_project_root()
-            providers_file = os.path.join(root, 'config', 'providers.json')
-            
-            # 转换为providers数组格式
-            providers_list = list(self.providers_config.values())
-            
-            with open(providers_file, 'w', encoding='utf-8') as f:
-                json.dump({'providers': providers_list}, f, indent=2, ensure_ascii=False)
+            from core.api.api_client import save_providers_config
+            save_providers_config(self.providers_config)
+        except Exception as e:
+            logger.error(f"保存提供商配置失败: {e}")
+            QMessageBox.warning(self, self.tr("错误"), self.tr("保存提供商配置失败: {}").format(e))
             
             logger.info("提供商配置已保存")
             
@@ -1019,8 +1015,15 @@ class SettingsDialog(QDialog):
         prompt_name = self.prompt_list.item(row).text()
         
         # 防止删除系统prompt
-        system_prompts = ['alignment', '.meta_prompt_generator', 'lqa_strict', 'lqa_gentle']
-        if prompt_name in system_prompts:
+        system_prompts = [
+            'alignment', '.alignment', 
+            'substudio_translate_en', '.translate_en', 
+            'lqa_strict', '.lqa_strict', 
+            'lqa_gentle', '.lqa_gentle',
+            'lqa_global', '.lqa_global',
+            '.meta_prompt_generator'
+        ]
+        if prompt_name in system_prompts or prompt_name.startswith('.'):
             QMessageBox.warning(self, "错误", f"'{prompt_name}' 是系统预设，不能删除")
             return
         

@@ -33,14 +33,9 @@ class StylePresetManager:
                 presets.append(os.path.splitext(f)[0])
         return sorted(presets)
 
-    def save_preset(self, name, style: SSAStyle):
-        """保存当前样式为预设"""
+    def save_preset(self, name, style: SSAStyle, extra_data: dict = None):
+        """保存当前样式为预设，包含标准属性和额外数据"""
         try:
-            # 序列化 SSAStyle
-            # 注意: pysubs2 的 Color 是 pysubs2.Color 对象，需要转为 ASS string &HBBGGRR
-            # 但 pysubs2 内部 color 存储为 PySubs2 Color object.
-            # 简便起见，我们存储 dict
-            
             data = {
                 "fontname": style.fontname,
                 "fontsize": style.fontsize,
@@ -63,7 +58,8 @@ class StylePresetManager:
                 "marginl": style.marginl,
                 "marginr": style.marginr,
                 "marginv": style.marginv,
-                "encoding": style.encoding
+                "encoding": style.encoding,
+                "extra_data": self._serialize_extra_data(extra_data or {})
             }
             
             path = os.path.join(self.styles_root, f"{name}.json")
@@ -76,7 +72,7 @@ class StylePresetManager:
             return False, str(e)
 
     def load_preset(self, name):
-        """加载预设为 SSAStyle 字典兼容对象 (用于 update)"""
+        """加载预设，返回包含标准属性和 extra_data 的字典"""
         path = os.path.join(self.styles_root, f"{name}.json")
         if not os.path.exists(path):
             return None
@@ -85,24 +81,37 @@ class StylePresetManager:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             
-            # 转换颜色 string 回 pysubs2.Color (实际上 pysubs2 style 属性接受 Color 对象)
-            # 但我们这里返回 data dict，让调用者去 update style
-            from pysubs2 import Color
-            
-            # Helper to parse ASS hex string back to pysubs2.Color if needed
-            # 其实 pysubs2.SSAStyle 属性赋值接受 int/tuple/Color
-            # json 里的 &HBBGGRR 是 string。pysubs2 有 parse_style 逻辑吗？
-            # 我们可以保留 string，pysubs2 不会自动转换 string -> Color。
-            # 所以我们需要手动处理颜色字段
-            
             for key in ["primarycolor", "secondarycolor", "outlinecolor", "backcolor"]:
                 if key in data:
                     data[key] = self._ass_to_color(data[key])
+            
+            if "extra_data" in data:
+                data["extra_data"] = self._deserialize_extra_data(data["extra_data"])
                     
             return data
         except Exception as e:
             logger.error(f"Failed to load preset: {e}")
             return None
+
+    def _serialize_extra_data(self, extra):
+        """处理 extra_data 中的 QColor 对象使其可 JSON 化"""
+        new_extra = {}
+        for k, v in extra.items():
+            if isinstance(v, QColor):
+                new_extra[k] = {"__qcolor__": True, "r": v.red(), "g": v.green(), "b": v.blue(), "a": v.alpha()}
+            else:
+                new_extra[k] = v
+        return new_extra
+
+    def _deserialize_extra_data(self, extra):
+        """还原 JSON 中的 QColor 对象"""
+        new_extra = {}
+        for k, v in extra.items():
+            if isinstance(v, dict) and v.get("__qcolor__"):
+                new_extra[k] = QColor(v['r'], v['g'], v['b'], v['a'])
+            else:
+                new_extra[k] = v
+        return new_extra
 
     def _color_to_ass(self, color_obj):
         """pysubs2.Color -> &HAABBGGRR String"""
