@@ -1,14 +1,14 @@
-# Kaoche Pro
+# kaoche-pro
 
-**烤车 Pro | 新一代 AI 字幕生产力套件**
+**一个烤肉工具箱**
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
 
-![kaoche-pro](ui/assets/icon.png)
+<img src="ui/assets/icon.png" width="100" height="100" />
 
-**Kaoche Pro** 是一款基于 AI 驱动的专业级字幕处理桌面应用。它采用现代化的插件架构，集成了质量分析 (LQA)、格式转换、智能听轴工作室 (SubStudio) 等全方位功能，旨在通过自动化与 AI 技术深度赋能字幕组、本地化团队及视频创作者。
+**kaoche-pro** 是一款基于 AI 驱动的专业级字幕处理桌面应用。它采用现代化的插件架构，集成了质量分析 (LQA)、格式转换、智能听轴工作室 (SubStudio) 等全方位功能，旨在通过自动化与 AI 技术深度赋能字幕组、本地化团队及视频创作者。
 
 ## ✨ 核心功能模块
 
