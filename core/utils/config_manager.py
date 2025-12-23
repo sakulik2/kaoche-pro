@@ -67,6 +67,16 @@ class ConfigManager:
             logger.error(f"保存配置失败: {e}")
             return False
     
+    
+    def update_config(self, section: str, updates: Dict[str, Any]) -> bool:
+        """更新指定配置段并保存"""
+        self.load() # 确保是最新的
+        if section not in self.config:
+            self.config[section] = {}
+            
+        self.config[section].update(updates)
+        return self.save(self.config)
+
     def enable_encryption(self, password: str) -> bool:
         """
         启用加密

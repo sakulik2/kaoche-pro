@@ -415,6 +415,26 @@ class SubStudioSettingsDialog(QDialog):
         group_strategy = QGroupBox("转写配置")
         strat_layout = QVBoxLayout(group_strategy)
         
+        # A0. 推理引擎
+        strat_layout.addWidget(QLabel("推理引擎"))
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItem("WhisperX (Faster-Whisper)", "whisper")
+        self.combo_engine.addItem("Sherpa-ONNX (Parakeet)", "sherpa")
+        
+        # Load engine config
+        cm = get_config_manager()
+        config = cm.load()
+        transcription_cfg = config.get('transcription', {})
+        current_engine = transcription_cfg.get('engine', 'whisper')
+        
+        idx = self.combo_engine.findData(current_engine)
+        if idx >= 0: self.combo_engine.setCurrentIndex(idx)
+        
+        self.combo_engine.currentIndexChanged.connect(self.on_engine_changed)
+        strat_layout.addWidget(self.combo_engine)
+        
+        strat_layout.addSpacing(5)
+
         # A1. 模型选择
         strat_layout.addWidget(QLabel("AI 模型"))
         source_layout = QHBoxLayout()
@@ -464,7 +484,7 @@ class SubStudioSettingsDialog(QDialog):
         lang_layout.addWidget(self.combo_lang)
         
         self.chk_vad = QCheckBox("语音活动检测")
-        self.chk_vad.setToolTip("自动跳过音频中的静音和底噪，显著减少幻听。")
+        self.chk_vad.setToolTip("使用 WhisperX 优化的 VAD 流程（基于 Silero/Pyannote），在转写前自动过滤静音片段，大幅提升准确率并减少幻听。")
         self.chk_vad.setChecked(transcription_cfg.get("vad_filter", True))
         self.chk_vad.stateChanged.connect(self.on_vad_changed)
         lang_layout.addSpacing(15)
@@ -598,13 +618,28 @@ class SubStudioSettingsDialog(QDialog):
              self.lbl_path_info.setText("当前路径: <未就绪 - 请先下载或选择模型>")
         else:
              self.lbl_path_info.setText(f"当前路径: {path}")
+             
+    def on_engine_changed(self, index):
+        engine = self.combo_engine.itemData(index)
+        # Save config
+        cm = get_config_manager()
+        cm.update_config("transcription", {"engine": engine})
+        
+        # Refresh lists
+        self.refresh_model_sources()
+        self.refresh_model_list()
 
     # Remove old toggle/browse methods
     # toggle_custom_path, browse_model_path removed
 
     def refresh_model_list(self):
         self.model_table.setRowCount(0)
-        models = self.manager.get_supported_models()
+        all_models = self.manager.get_supported_models()
+        
+        # Filter by current engine
+        current_engine = self.combo_engine.currentData()
+        models = [m for m in all_models if m.get("type", "whisper") == current_engine]
+        
         self.model_table.setRowCount(len(models))
         
         for row, model in enumerate(models):
@@ -627,18 +662,50 @@ class SubStudioSettingsDialog(QDialog):
         if not items: return
         
         model_id = self.model_table.item(items[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        
+        # Init Queue
+        self._download_queue = [model_id]
+        
+        # If Sherpa model, also queue punctuation model if not ready
+        if "sherpa" in model_id.lower() or "parakeet" in model_id.lower():
+            PUNCT_ID = "sherpa-onnx-punct-ct-transformer-zh-en-vocabulary-2023-04-12"
+            if not self.manager.is_model_ready(PUNCT_ID):
+                 self._download_queue.append(PUNCT_ID)
+                 
+        self.process_download_queue()
+        
+    def process_download_queue(self):
+        if not hasattr(self, '_download_queue') or not self._download_queue:
+            return
+
+        next_id = self._download_queue[0] # Peek
         mirror_url = "https://hf-mirror.com" if self.radio_mirror.isChecked() else None
         
         # Lock UI
         self.btn_download.setEnabled(False)
         self.model_table.setEnabled(False)
+        self.lbl_status.setText(f"准备下载: {next_id} ...")
         
-        self.manager.download_model(model_id, mirror_url)
+        self.manager.download_model(next_id, mirror_url)
 
     def on_download_progress(self, msg):
         self.lbl_status.setText(msg)
 
     def on_download_finished(self, success, msg):
+        # Pop current
+        if hasattr(self, '_download_queue') and self._download_queue:
+            finished_id = self._download_queue.pop(0)
+            
+            if not success:
+                 QMessageBox.warning(self, "下载失败", f"模型 {finished_id} 下载失败:\n{msg}")
+                 self._download_queue = [] # Clear queue on error
+            
+             # Process next
+            if self._download_queue:
+                 self.lbl_status.setText("正在下载关联模型 (标点)...")
+                 self.process_download_queue()
+                 return
+
         self.model_table.setEnabled(True)
         self.update_dl_buttons()
         self.refresh_model_list()
@@ -647,7 +714,7 @@ class SubStudioSettingsDialog(QDialog):
             QMessageBox.information(self, "成功", "下载完成")
             self.lbl_status.setText("下载完成")
         else:
-            QMessageBox.critical(self, "失败", f"下载出错: {msg}")
+             self.lbl_status.setText("下载失败")
     def on_lang_changed(self, index):
         lang = self.combo_lang.itemData(index)
         cm = get_config_manager()

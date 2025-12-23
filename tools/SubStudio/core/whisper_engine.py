@@ -11,10 +11,11 @@ class TranscriptionWorker(QThread):
     progress_percent = pyqtSignal(int) # 0-100
     finished = pyqtSignal(bool, object) # success, result (list of dict or error str)
 
-    def __init__(self, model_path, audio_path, device="cuda", compute_type="float16", align=True, language=None, initial_prompt=None, vad_filter=True):
+    def __init__(self, model_path, audio_path, models_root, device="cuda", compute_type="float16", align=True, language=None, initial_prompt=None, vad_filter=True):
         super().__init__()
         self.model_path = model_path
         self.audio_path = audio_path
+        self.models_root = models_root
         self.device = device
         self.compute_type = compute_type
         self.align = align
@@ -28,8 +29,7 @@ class TranscriptionWorker(QThread):
 
     def run(self):
         try:
-            # 环境变量重定向：将 torch/torchaudio 的缓存目录设为项目本地，避免下载到 C 盘
-            # 模型路径通常为 tools/SubStudio/models/hub
+            # 环境变量重定向：将 torch/torchaudio 的缓存目录设为项目本地
             models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
             torch_home = os.path.join(models_dir, "hub")
             os.makedirs(torch_home, exist_ok=True)
@@ -37,70 +37,105 @@ class TranscriptionWorker(QThread):
             logger.info(f"Setting TORCH_HOME to {torch_home}")
             
             import torch
-            from faster_whisper import WhisperModel
             
+            # [CRITICAL] PyTorch 2.6+ 默认 weights_only=True 导致 pyannote/whisperx 加载失败
+            # Monkeypatch torch.load to force weights_only=False globally for this thread
+            _original_load = torch.load
+            def _robust_load(*args, **kwargs):
+                # FORCE weights_only=False to support older models/libraries (Pyannote/WhisperX)
+                # potentially unsafe but necessary for these libraries until they update.
+                kwargs['weights_only'] = False
+                return _original_load(*args, **kwargs)
+            torch.load = _robust_load
+            logger.info("Applied torch.load patch (force weights_only=False)")
+            
+            import whisperx
+            import gc
+            import warnings
+            
+            # [Optimization] 抑制 benign 警告并启用 TF32 加速
+            # 1. 忽略 Pyannote/TorchAudio 版本不匹配警告
+            warnings.filterwarnings("ignore", message=".*torchaudio._backend.list_audio_backends.*")
+            warnings.filterwarnings("ignore", message=".*Model was trained with.*")
+            warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*")
+            
+            # 2. 启用 TF32 (TensorFloat-32) 以获得在 Ampere+ GPU 上的最佳性能
+            # 这也解决了 Pyannote 的 ReproducibilityWarning
+            if torch.cuda.is_available():
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                logger.info("Enabled TF32 for faster inference")
+            
+            # --- 阶段 1: 加载模型 (Loading Model) ---
             self.progress.emit("正在加载模型 (Loading Model)...")
             self.progress_percent.emit(5)
             
-            # 1. 加载模型
-            # 自动降级处理：如果 cuda 不可用，强制 cpu
+            # 自动降级处理
             if self.device == "cuda" and not torch.cuda.is_available():
                 self.progress.emit("CUDA 不可用，切换到 CPU...")
                 self.device = "cpu"
-                self.compute_type = "int8" # CPU 推荐 int8
+                self.compute_type = "int8"
             
             try:
-                model = WhisperModel(self.model_path, device=self.device, compute_type=self.compute_type)
+                # whisperx.load_model 内部封装了 faster-whisper
+                # 注意: whisperx 默认使用 vad_model，如果只想加载识别模型需要注意参数
+                # 这里我们直接加载完整管线
+                model = whisperx.load_model(
+                    self.model_path, 
+                    device=self.device, 
+                    compute_type=self.compute_type,
+                    language=self.language,
+                    asic_iris=False # 避免可能的 mps 错误
+                )
             except Exception as e:
-                # 某些旧显卡不支持 float16
+                # 尝试 int8 降级
                 if "float16" in self.compute_type:
                     self.progress.emit("float16 加载失败，尝试 int8...")
-                    model = WhisperModel(self.model_path, device=self.device, compute_type="int8")
+                    model = whisperx.load_model(
+                        self.model_path, 
+                        device=self.device, 
+                        compute_type="int8",
+                        language=self.language
+                    )
                 else:
                     raise e
-
-            self.progress_percent.emit(20)
             
-            if self._is_cancelled: return
-
-            # 2. [CRITICAL PATCH] 修复 large-v3-turbo 维度问题 (Runtime Patch)
-            # 检查 mel_filters 第一维是否为 80 (旧版默认)，如果是且模型需要 128，则进行热修复
-            # 注意：这里我们假设 turbo 模型总是需要 128 mels。更严谨的做法是 try-catch 第一次推理错误？
-            # 简单起见，照搬 POC 的检测逻辑
+            # [CRITICAL PATCH] 修复 large-v3-turbo 维度问题 (Runtime Patch)
+            # whisperx.load_model 返回的是 FasterWhisperPipeline，其实际模型在 .model 属性中
             try:
-                current_filters = model.feature_extractor.mel_filters
-                # 通常 turbo 模型如果被错误加载，这里可能只有 80
-                # 但我们需要知道模型本身是否期望 128。
-                # faster-whisper 1.0+ 对 v3 支持较好，但对于 ctranslate2 转换版可能仍需手动干预
-                # 我们的策略：如果路径包含 turbo 且 filters 是 80，或者仅仅尝试修正
+                # 兼容性检查：确定是 pipeline 还是 direct model (POC vs Engine)
+                # Engine 中使用的是 whisperx.load_model，它返回 FasterWhisperPipeline
+                inner_model = model.model 
                 
-                # 简易启发式：如果文件名包含 turbo 或者 large-v3
+                current_filters = inner_model.feature_extractor.mel_filters
                 is_v3_derived = "turbo" in self.model_path.lower() or "large-v3" in self.model_path.lower()
                 
                 if is_v3_derived and current_filters.shape[0] == 80:
-                    self.progress.emit("应用模型热修复 (Applying Runtime Patch)...")
-                    new_filters = model.feature_extractor.get_mel_filters(
-                        model.feature_extractor.sampling_rate, 
-                        model.feature_extractor.n_fft, 
+                    self.progress.emit("应用模型热修复 (Applying Runtime Patch: 80->128)...")
+                    logger.warning("Detecting 80-mel filters on v3/turbo model. Applying patch...")
+                    import numpy as np
+                    new_filters = inner_model.feature_extractor.get_mel_filters(
+                        inner_model.feature_extractor.sampling_rate, 
+                        inner_model.feature_extractor.n_fft, 
                         n_mels=128
                     )
-                    # 必须转换为 float32，否则 CTranslate2 会报错 Unsupported type: <f8
                     new_filters = new_filters.astype(np.float32)
-                    model.feature_extractor.mel_filters = new_filters
+                    inner_model.feature_extractor.mel_filters = new_filters
                     logger.info("Applied mel-filter patch: 80 -> 128")
             except Exception as patch_e:
-                logger.warning(f"Patch failed (non-fatal?): {patch_e}")
+                 logger.warning(f"Patch failed (non-fatal?): {patch_e}")
+
+            self.progress_percent.emit(10)
             
-            self.progress_percent.emit(30)
+            if self._is_cancelled: return
+
+            # --- 阶段 2: 加载音频与 VAD (Audio & VAD) ---
+            self.progress.emit("正在读取音频与分析 VAD (Loading Audio & VAD)...")
+            audio = whisperx.load_audio(self.audio_path)
             
-            # 3. 开始转写
-            start_msg = f"正在转写 (Transcribing)... 设备: {self.device}"
-            self.progress.emit(start_msg)
-            print(f"[WhisperEngine] {start_msg}")
-            logger.info(start_msg)
-            
-            # beam_size=5 是常用配置
-            # 强化标点符号输出：如果用户没提供 prompt，使用默认的标点诱导提示
+            # 提示词处理
+            # WhisperX 的 transcribe 接口支持 initial_prompt 但位置可能不同，
+            # v3.1.1+ 通常通过 asr_options 传递
             prompt = self.initial_prompt
             if not prompt:
                 if self.language == "zh":
@@ -108,64 +143,56 @@ class TranscriptionWorker(QThread):
                 elif self.language == "en":
                     prompt = ".,!?; "
                 else:
-                    # 自动检测模式或多语言混合模式：使用通用混合标点提示
                     prompt = "。，！？；.,!?; "
             
-            self.progress.emit(f"正在转写 (Transcribing)... 模式: {'自动检测' if not self.language else self.language}")
-            segments_gen, info = model.transcribe(
-                self.audio_path, 
-                beam_size=5, 
+            # 构建 ASR 选项
+            asr_options = {
+                "initial_prompt": prompt,
+                "hotwords": None,
+            }
+
+            if self._is_cancelled: return
+
+            # --- 阶段 3: 批量转写 (Batch Transcription) ---
+            # 这是阻塞操作，进度条设为不确定模式 (-1)
+            self.progress.emit("正在批量转写...")
+            self.progress_percent.emit(-1) # Indeterminate mode
+            
+            batch_size = 16 # 显存允许时越大越快
+            
+            result = model.transcribe(
+                audio, 
+                batch_size=batch_size, 
                 language=self.language,
-                initial_prompt=prompt,
-                vad_filter=self.vad_filter
-            ) 
+                chunk_size=30, # VAD chunk size def 30s
+                print_progress=False, # 我们无法捕获它的 stdout 进度
+                combined_progress=False
+            )
+            # 注意: whisperx.transcribe 返回 dict: {'segments': [...], 'language': 'zh'}
             
-            # [NEW] 立即回显检测到的语言
-            self.progress.emit(f"DETECTION: {info.language} ({info.language_probability:.2f})")
-            logger.info(f"Detected language: {info.language} with probability {info.language_probability:.4f}")
+            segments = result["segments"]
+            detected_lang = result.get("language", "unknown")
             
-            segments = []
-            total_duration = info.duration
-            print(f"[WhisperEngine] Audio Duration: {total_duration:.2f}s")
-            
-            for seg in segments_gen:
-                if self._is_cancelled: 
-                    print("[WhisperEngine] Task Cancelled.")
-                    return
-                
-                segments.append({
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text
-                })
-                
-                # Terminal & Log Output
-                log_msg = f"[{seg.start:.2f}s -> {seg.end:.2f}s] {seg.text.strip()}"
-                print(log_msg)
-                logger.info(log_msg)
-                
-                # 更新进度 30% -> 90%
-                if total_duration > 0:
-                    percent = 30 + int((seg.end / total_duration) * 60)
-                    percent = min(90, percent)
-                    self.progress_percent.emit(percent)
-                    self.progress.emit(f"转写中: {seg.end:.1f}s / {total_duration:.1f}s")
+            # 回显语言
+            self.progress.emit(f"DETECTION: {detected_lang}")
+            logger.info(f"Detected language: {detected_lang}")
             
             self.progress_percent.emit(90)
             
-            # 4. 精准对齐 (WhisperX Alignment)
+            # --- 阶段 4: 精准对齐 ---
             if self.align and not self._is_cancelled:
                 try:
-                    import whisperx
-                    self.progress.emit("正在进行音频对齐 (Aligning)...")
-                    logger.info("Starting WhisperX alignment...")
+                    self.progress.emit("正在进行音频对齐...")
                     
                     # 加载对齐模型
-                    # 针对中文通常使用 WAV2VEC2_ASR_700_CHINESE，英文为默认
-                    lang_code = info.language
+                    align_model_dir = os.path.join(self.models_root, "alignment")
+                    if not os.path.exists(align_model_dir):
+                        os.makedirs(align_model_dir, exist_ok=True)
+
                     model_a, metadata = whisperx.load_align_model(
-                        language_code=lang_code, 
-                        device=self.device
+                        language_code=detected_lang, 
+                        device=self.device,
+                        model_dir=align_model_dir
                     )
                     
                     # 执行对齐
@@ -173,22 +200,19 @@ class TranscriptionWorker(QThread):
                         segments, 
                         model_a, 
                         metadata, 
-                        self.audio_path, 
+                        audio, 
                         self.device, 
                         return_char_alignments=True
                     )
                     
-                    # 释放对齐模型显存
-                    import gc
+                    # 资源清理
                     del model_a
                     if self.device == "cuda": torch.cuda.empty_cache()
-                    gc.collect()
                     
-                    # 提取对齐后的段落
                     if "segments" in result_aligned:
+                        # 转换格式以适配后续处理
                         aligned_segments = []
                         for seg in result_aligned["segments"]:
-                            # 保留 words 和 chars 以供 SRTProcessor 进行精确重切分
                             item = {
                                 "start": seg.get("start", 0),
                                 "end": seg.get("end", 0),
@@ -197,30 +221,33 @@ class TranscriptionWorker(QThread):
                             if "words" in seg: item["words"] = seg["words"]
                             if "chars" in seg: item["chars"] = seg["chars"]
                             aligned_segments.append(item)
-                            
                         segments = aligned_segments
-                        logger.info(f"Alignment successful. Managed {len(segments)} segments.")
-                    
-                except ImportError:
-                    logger.warning("whisperx not installed, skipping alignment.")
+                        
                 except Exception as ae:
                     logger.error(f"Alignment failed: {ae}")
                     self.progress.emit(f"对齐失败 (跳过): {ae}")
             
-            # 5. SRT/ASS 后处理 (Post-Processing)
+            # 释放主模型
+            del model
+            gc.collect()
+            if self.device == "cuda": torch.cuda.empty_cache()
+
+            # --- 阶段 5: SRT 后处理 ---
             if not self._is_cancelled:
-                from .srt_processor import SRTProcessor
-                self.progress.emit("正在优化字幕格式 (Finishing)...")
-                processed_segments = SRTProcessor.process_segments(
-                    segments, 
-                    lang=info.language
-                )
-                segments = processed_segments
+                try:
+                    from .srt_processor import SRTProcessor
+                    self.progress.emit("正在优化字幕格式 (Finishing)...")
+                    # whisperx 的 segment 结构可能稍有不同，确保兼容
+                    processed_segments = SRTProcessor.process_segments(
+                        segments, 
+                        lang=detected_lang
+                    )
+                    segments = processed_segments
+                except Exception as pe:
+                    logger.warning(f"Post-processing warning: {pe}")
 
             self.progress_percent.emit(95)
             self.progress.emit("处理完成 (Finalizing)...")
-            print(f"[WhisperEngine] Processed segments: {len(segments)}")
-            logger.info(f"Transcription and Post-processing Completed. Total: {len(segments)}")
             
             self.finished.emit(True, segments)
             
@@ -253,12 +280,16 @@ class WhisperEngine(QObject):
             
         model_path = self.manager.get_model_path() # 获取当前选定的模型 (Custom or Default)
         if not model_path:
-            return False, "No model selected or downloaded"
+            # [Auto Fallback] 如果未找到本地模型，默认使用 large-v3-turbo，
+            # WhisperX 将会自动从 HuggingFace 缓存下载。
+            logger.info("未找到本地模型，自动回退至默认模型 (Auto-Download): large-v3-turbo")
+            model_path = self.manager.DEFAULT_MODEL_ID
             
         # 默认语言逻辑：如果您想支持 UI 传入，这里可以扩展
         self.worker = TranscriptionWorker(
             model_path, 
-            audio_path, 
+            audio_path,
+            self.manager.models_root, # Pass the root path explicitly
             device, 
             align=align, 
             language=language,

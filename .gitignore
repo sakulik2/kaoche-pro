@@ -42,3 +42,12 @@ test/
 models/
 plan/
 cache/
+
+# AI Models
+tools/SubStudio/models/
+*.bin
+*.pt
+*.onnx
+*.wav
+*.mkv
+*.mp4

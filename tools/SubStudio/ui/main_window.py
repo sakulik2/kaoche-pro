@@ -11,6 +11,7 @@ from ..core.model_manager import ModelManager
 from .overlay_window import OverlayWindow
 from ui.components.video_player import VideoPlayerWidget
 from ..core.rapid_creator import RapidCreationController
+from ..core.dependency_checker import DependencyChecker
 
 LIGHT_THEME = """
     QWidget {
@@ -134,9 +135,14 @@ class SubStudioMainView(QWidget):
         self.model_manager = ModelManager()
         self._init_model_signals()
         
-        from ..core.whisper_engine import WhisperEngine
-        self.engine = WhisperEngine(self.model_manager)
-        self._init_engine_signals()
+        # 2. AI 模型管理 & 推理引擎
+        self.model_manager = ModelManager()
+        self._init_model_signals()
+        
+        # 引擎延迟加载 (Lazy Load)
+        self.engine = None
+        self.current_engine_type = None
+        # self._init_engine_signals() # Will be called when engine is loaded
         
         # 3. UI 初始化
         self.settings = QSettings("KaochePro", "SubStudio")
@@ -160,6 +166,8 @@ class SubStudioMainView(QWidget):
         self.is_playing = False
         self.current_time_ms = 0.0
         self._setup_playback_sync()
+
+
 
     def statusBar(self):
         """兼容 QMainWindow 的 statusBar() 方法"""
@@ -261,7 +269,10 @@ class SubStudioMainView(QWidget):
                 self._trans_dialog.setLabelText(display_msg)
             else:
                 self._trans_dialog.setLabelText(msg)
-        if percent >= 0:
+        if percent == -1:
+            self._trans_dialog.setRange(0, 0) # Indeterminate mode
+        elif percent >= 0:
+            self._trans_dialog.setRange(0, 100)
             self._trans_dialog.setValue(percent)
 
     def _on_transcribe_finished(self, success, result):
@@ -320,9 +331,70 @@ class SubStudioMainView(QWidget):
         lang = transcription_cfg.get("language", None)
         prompt = transcription_cfg.get("prompt", "")
         vad = transcription_cfg.get("vad_filter", True)
+        engine_type = transcription_cfg.get("engine", "whisper")
         
-        # 4. 启动
-        success, msg = self.engine.start_transcription(video_path, language=lang, initial_prompt=prompt, vad_filter=vad)
+        # 4. 引擎切换逻辑
+        if self.engine is None or self.current_engine_type != engine_type:
+            # Clean up old
+            # if self.engine: disconnect? self.engine is QObject, garbage collection handles it if no refs
+            
+            if engine_type == "sherpa":
+                # 仅在需要时检查 Sherpa CUDA 依赖 (懒加载)
+                if not DependencyChecker.check_sherpa_cuda(self):
+                    # 用户取消或失败
+                    return
+
+                from ..core.sherpa_engine import SherpaEngine
+                from ..core.sherpa_engine import SherpaEngine
+                self.engine = SherpaEngine(self.model_manager)
+                
+                # [自动下载标点模型]
+                # 检查是否需要下载标点模型
+                punct_id = "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12"
+                if not self.model_manager.is_model_ready(punct_id):
+                    logger.info("Punctuation model missing. Triggering auto-download...")
+                    # Block UI with a progress dialog
+                    pd = QProgressDialog("正在下载 Sherpa 标点模型 (约50MB)...", "取消", 0, 0, self)
+                    pd.setWindowModality(Qt.WindowModality.WindowModal)
+                    pd.show()
+                    
+                    # Create a local event loop to wait for download
+                    from PyQt6.QtCore import QEventLoop
+                    loop = QEventLoop()
+                    
+                    def on_dl_finished(success, msg):
+                        loop.quit()
+                        if not success:
+                            QMessageBox.warning(self, "下载失败", f"标点模型下载失败，将跳过标点恢复。\n错误: {msg}")
+
+                    model_manager = self.model_manager
+                    model_manager.download_finished.connect(on_dl_finished)
+                    
+                    if model_manager.download_model(punct_id):
+                        loop.exec()
+                    else:
+                        pd.cancel() # Already downloading or error
+                        
+                    model_manager.download_finished.disconnect(on_dl_finished)
+                    pd.close()
+            else:
+                from ..core.whisper_engine import WhisperEngine
+                self.engine = WhisperEngine(self.model_manager)
+                
+            self._init_engine_signals()
+            self.current_engine_type = engine_type
+            logger.info(f"Switched transcription engine to: {engine_type}")
+
+        # 5. 启动
+        
+        # 5. 启动
+        # Note: SherpaEngine and WhisperEngine now allow unused kwargs via compatible signature
+        success, msg = self.engine.start_transcription(
+            video_path, 
+            language=lang, 
+            initial_prompt=prompt, 
+            vad_filter=vad
+        )
         if not success:
             QMessageBox.warning(self, "错误", f"无法启动: {msg}")
 

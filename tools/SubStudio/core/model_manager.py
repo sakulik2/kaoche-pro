@@ -33,12 +33,23 @@ class ModelDownloadThread(QThread):
             # 使用 snapshot_download 下载整个仓库
             # allow_patterns 只下载必要文件 (model.bin, config.json, vocabulary等)
             # 对于 CTranslate2 模型，通常需要 model.bin, config.json, vocabulary.json/txt
+            # 智能判断下载模式
+            allow_patterns = None
+            if "sherpa" in self.repo_id.lower() or "parakeet" in self.repo_id.lower():
+                # Sherpa 模型只需要 onnx 和 tokens
+                allow_patterns = ["*.onnx", "tokens.txt"]
+            else:
+                # Whisper/CTranslate2 模型默认下载所有关键文件
+                # 也可以显式指定 ["model.bin", "config.json", "vocabulary.*"] 但默认通常没问题
+                pass
+
             model_path = snapshot_download(
                 repo_id=self.repo_id,
                 local_dir=self.local_dir,
                 local_dir_use_symlinks=False, # 必须 False，否则 Windows 下可能产生无法读取的软链
                 resume_download=True,
-                max_workers=4
+                max_workers=4,
+                allow_patterns=allow_patterns
             )
             
             self.progress.emit("下载完成！")
@@ -61,12 +72,32 @@ class ModelManager(QObject):
     model_list_changed = pyqtSignal() # 当只有状态更新时触发
     
     # 支持的模型列表
+    # 支持的模型列表
     SUPPORTED_MODELS = [
-        {"id": "deepdml/faster-whisper-large-v3-turbo-ct2", "name": "Large V3 Turbo (推荐)", "size": "1.6GB", "desc": "速度与精度的最佳平衡"},
-        {"id": "Systran/faster-whisper-large-v3", "name": "Large V3 (官方)", "size": "3.1GB", "desc": "精度最高，但速度较慢"},
-        {"id": "Systran/faster-whisper-medium", "name": "Medium", "size": "1.5GB", "desc": "平衡型"},
-        {"id": "Systran/faster-whisper-small", "name": "Small", "size": "500MB", "desc": "速度快，精度一般"},
-        {"id": "Systran/faster-whisper-base", "name": "Base", "size": "200MB", "desc": "极速，适合简单场景"},
+        # Whisper Models
+        {"id": "deepdml/faster-whisper-large-v3-turbo-ct2", "name": "Large V3 Turbo (推荐)", "size": "1.6GB", "desc": "速度与精度的最佳平衡", "type": "whisper"},
+        {"id": "Systran/faster-whisper-large-v3", "name": "Large V3 (官方)", "size": "3.1GB", "desc": "精度最高，但速度较慢", "type": "whisper"},
+        {"id": "Systran/faster-whisper-medium", "name": "Medium", "size": "1.5GB", "desc": "平衡型", "type": "whisper"},
+        {"id": "Systran/faster-whisper-small", "name": "Small", "size": "500MB", "desc": "速度快，精度一般", "type": "whisper"},
+        {"id": "Systran/faster-whisper-base", "name": "Base", "size": "200MB", "desc": "极速，适合简单场景", "type": "whisper"},
+        
+        # Sherpa-ONNX Models
+        {
+            "id": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", 
+            "name": "Parakeet TDT 0.6B (Int8)", 
+            "size": "~700MB", 
+            "desc": "Sherpa-ONNX引擎，RNN-T架构，实时性好", 
+            "type": "sherpa"
+        },
+        # Punctuation Model
+        {
+            "id": "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12",
+            "name": "Sherpa Punctuation (ZH/EN)",
+            "size": "50 MB",
+            "desc": "自动标点恢复 (支持中英文)",
+            "type": "punctuation",
+            "engine": "sherpa"
+        },
     ]
     
     DEFAULT_MODEL_ID = "deepdml/faster-whisper-large-v3-turbo-ct2"
@@ -98,13 +129,21 @@ class ModelManager(QObject):
 
     def scan_local_models(self):
         """
-        递归扫描 models_root 下的所有子文件夹，寻找包含 model.bin 的目录
+        递归扫描 models_root 下的所有子文件夹，寻找包含 model.bin 或 tokens.txt 的目录
         返回: list of (name, full_path)
         """
         found_models = []
         try:
             for root, dirs, files in os.walk(self.models_root):
-                if "model.bin" in files and "config.json" in files:
+                # Whisper Check
+                is_whisper = "model.bin" in files and "config.json" in files
+                # Sherpa Check (tokens.txt + encoder*.onnx)
+                # 必须包含 encoder，避免过早识别为就绪
+                has_onnx = any(f.endswith(".onnx") for f in files)
+                has_encoder = any("encoder" in f and f.endswith(".onnx") for f in files)
+                is_sherpa = "tokens.txt" in files and has_encoder
+                
+                if is_whisper or is_sherpa:
                     # Found a valid model dir
                     # Create a friendly name relative to models_root
                     rel_path = os.path.relpath(root, self.models_root)
@@ -134,21 +173,54 @@ class ModelManager(QObject):
         sanitized_name = model_id.replace("/", "_")
         target_dir = os.path.join(self.models_root, sanitized_name)
         
-        if os.path.exists(os.path.join(target_dir, "model.bin")):
-            return target_dir
+        # Check validity based on type (heuristic)
+        if os.path.exists(target_dir):
+            files = os.listdir(target_dir)
+            if "model.bin" in files: return target_dir
+            if "tokens.txt" in files:
+                # Sherpa Parakeet Check: needs encoder, decoder, joiner
+                has_enc = any("encoder" in f and f.endswith(".onnx") for f in files)
+                has_dec = any("decoder" in f and f.endswith(".onnx") for f in files)
+                has_join = any("joiner" in f and f.endswith(".onnx") for f in files)
+                if has_enc and has_dec and has_join:
+                    return target_dir
             
         # 3. [智能寻优] 如果指定模型不在，尝试在本地 models 目录下找一个最好的“替补”
         logger.info(f"Model {model_id} not found locally, scanning for best alternative...")
+        
+        # 确定目标类型
+        target_type = "whisper" # 默认
+        for m in self.SUPPORTED_MODELS:
+            if m["id"] == model_id:
+                target_type = m.get("type", "whisper")
+                break
+                
         locals = self.scan_local_models() # list of (rel_path, full_path)
-        if not locals:
+        
+        # 筛选同类型模型
+        candidates = []
+        for name, path in locals:
+            # 检测本地模型类型
+            local_type = "unknown"
+            files = []
+            try: files = os.listdir(path)
+            except: continue
+            
+            if "model.bin" in files: local_type = "whisper"
+            elif "tokens.txt" in files and any(f.endswith(".onnx") for f in files): local_type = "sherpa"
+            
+            if local_type == target_type:
+                candidates.append((name, path))
+                
+        if not candidates:
             return None
             
         # 优先级权重 (分值越高越好)
-        rank = {"large-v3": 100, "large": 90, "medium": 70, "small": 50, "base": 30, "tiny": 10}
+        rank = {"large-v3": 100, "large": 90, "medium": 70, "small": 50, "base": 30, "tiny": 10, "parakeet": 80}
         best_path = None
         max_score = -1
         
-        for name, path in locals:
+        for name, path in candidates:
             score = 5 # 基础分
             lower_name = name.lower()
             for key, val in rank.items():
